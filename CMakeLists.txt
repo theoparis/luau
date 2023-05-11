@@ -42,6 +42,10 @@ if(LUAU_BUILD_CLI)
     set_target_properties(Luau.Analyze.CLI PROPERTIES OUTPUT_NAME luau-analyze)
     set_target_properties(Luau.Ast.CLI PROPERTIES OUTPUT_NAME luau-ast)
     set_target_properties(Luau.Reduce.CLI PROPERTIES OUTPUT_NAME luau-reduce)
+
+    install(
+        TARGETS Luau.Repl.CLI Luau.Analyze.CLI Luau.Ast.CLI Luau.Reduce.CLI
+    )
 endif()
 
 if(LUAU_BUILD_TESTS)
@@ -85,6 +89,22 @@ target_link_libraries(Luau.VM PUBLIC Luau.Common)
 target_include_directories(isocline PUBLIC extern/isocline/include)
 
 target_include_directories(Luau.VM.Internals INTERFACE VM/src)
+
+install(
+    TARGETS Luau.VM Luau.CodeGen Luau.Common Luau.Ast Luau.Analysis Luau.Compiler
+    EXPORT LuauTargets
+)
+install(
+    DIRECTORY "${CMAKE_SOURCE_DIR}/VM/include/"
+    DIRECTORY "${CMAKE_SOURCE_DIR}/CodeGen/include/"
+    DIRECTORY "${CMAKE_SOURCE_DIR}/Ast/include/"
+    DIRECTORY "${CMAKE_SOURCE_DIR}/Compiler/include/"
+    DIRECTORY "${CMAKE_SOURCE_DIR}/Analysis/include/"
+    DIRECTORY "${CMAKE_SOURCE_DIR}/Common/include/"
+    DESTINATION "include"
+    FILES_MATCHING
+    PATTERN "*.h"
+)
 
 set(LUAU_OPTIONS)
 
