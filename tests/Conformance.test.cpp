@@ -2,13 +2,13 @@
 #include "lua.h"
 #include "lualib.h"
 #include "luacode.h"
+#include "luacodegen.h"
 
 #include "Luau/BuiltinDefinitions.h"
 #include "Luau/ModuleResolver.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/StringUtils.h"
 #include "Luau/BytecodeBuilder.h"
-#include "Luau/CodeGen.h"
 #include "Luau/Frontend.h"
 
 #include "doctest.h"
@@ -159,8 +159,8 @@ static StateRef runConformance(const char* name, void (*setup)(lua_State* L) = n
     StateRef globalState(initialLuaState, lua_close);
     lua_State* L = globalState.get();
 
-    if (codegen && !skipCodegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::create(L);
+    if (codegen && !skipCodegen && luau_codegen_supported())
+        luau_codegen_create(L);
 
     luaL_openlibs(L);
 
@@ -213,8 +213,8 @@ static StateRef runConformance(const char* name, void (*setup)(lua_State* L) = n
     int result = luau_load(L, chunkname.c_str(), bytecode, bytecodeSize, 0);
     free(bytecode);
 
-    if (result == 0 && codegen && !skipCodegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::compile(L, -1);
+    if (result == 0 && codegen && !skipCodegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
 
     int status = (result == 0) ? lua_resume(L, nullptr, 0) : LUA_ERRSYNTAX;
 
@@ -703,6 +703,15 @@ TEST_CASE("Debugger")
                 CHECK(lua_tointeger(L, -1) == 9);
                 lua_pop(L, 1);
             }
+            else if (breakhits == 13)
+            {
+                // validate assignment via lua_getlocal
+                const char* l = lua_getlocal(L, 0, 1);
+                REQUIRE(l);
+                CHECK(strcmp(l, "a") == 0);
+                CHECK(lua_isnil(L, -1));
+                lua_pop(L, 1);
+            }
 
             if (interruptedthread)
             {
@@ -712,7 +721,7 @@ TEST_CASE("Debugger")
         },
         nullptr, &copts, /* skipCodegen */ true); // Native code doesn't support debugging yet
 
-    CHECK(breakhits == 12); // 2 hits per breakpoint
+    CHECK(breakhits == 14); // 2 hits per breakpoint
 
     if (singlestep)
         CHECK(stephits > 100); // note; this will depend on number of instructions which can vary, so we just make sure the callback gets hit often
@@ -1668,8 +1677,8 @@ TEST_CASE("HugeFunction")
     StateRef globalState(luaL_newstate(), lua_close);
     lua_State* L = globalState.get();
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::create(L);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_create(L);
 
     luaL_openlibs(L);
     luaL_sandbox(L);
@@ -1682,8 +1691,8 @@ TEST_CASE("HugeFunction")
 
     REQUIRE(result == 0);
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::compile(L, -1);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
 
     int status = lua_resume(L, nullptr, 0);
     REQUIRE(status == 0);

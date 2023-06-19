@@ -329,12 +329,41 @@ struct DynamicPropertyLookupOnClassesUnsafe
     bool operator==(const DynamicPropertyLookupOnClassesUnsafe& rhs) const;
 };
 
-using TypeErrorData = Variant<TypeMismatch, UnknownSymbol, UnknownProperty, NotATable, CannotExtendTable, OnlyTablesCanHaveMethods,
-    DuplicateTypeDefinition, CountMismatch, FunctionDoesNotTakeSelf, FunctionRequiresSelf, OccursCheckFailed, UnknownRequire,
-    IncorrectGenericParameterCount, SyntaxError, CodeTooComplex, UnificationTooComplex, UnknownPropButFoundLikeProp, GenericError, InternalError,
-    CannotCallNonFunction, ExtraInformation, DeprecatedApiUsed, ModuleHasCyclicDependency, IllegalRequire, FunctionExitsWithoutReturning,
-    DuplicateGenericParameter, CannotInferBinaryOperation, MissingProperties, SwappedGenericTypeParameter, OptionalValueAccess, MissingUnionProperty,
-    TypesAreUnrelated, NormalizationTooComplex, TypePackMismatch, DynamicPropertyLookupOnClassesUnsafe>;
+struct UninhabitedTypeFamily
+{
+    TypeId ty;
+
+    bool operator==(const UninhabitedTypeFamily& rhs) const;
+};
+
+struct UninhabitedTypePackFamily
+{
+    TypePackId tp;
+
+    bool operator==(const UninhabitedTypePackFamily& rhs) const;
+};
+
+struct WhereClauseNeeded
+{
+    TypeId ty;
+
+    bool operator==(const WhereClauseNeeded& rhs) const;
+};
+
+struct PackWhereClauseNeeded
+{
+    TypePackId tp;
+
+    bool operator==(const PackWhereClauseNeeded& rhs) const;
+};
+
+using TypeErrorData =
+    Variant<TypeMismatch, UnknownSymbol, UnknownProperty, NotATable, CannotExtendTable, OnlyTablesCanHaveMethods, DuplicateTypeDefinition,
+        CountMismatch, FunctionDoesNotTakeSelf, FunctionRequiresSelf, OccursCheckFailed, UnknownRequire, IncorrectGenericParameterCount, SyntaxError,
+        CodeTooComplex, UnificationTooComplex, UnknownPropButFoundLikeProp, GenericError, InternalError, CannotCallNonFunction, ExtraInformation,
+        DeprecatedApiUsed, ModuleHasCyclicDependency, IllegalRequire, FunctionExitsWithoutReturning, DuplicateGenericParameter,
+        CannotInferBinaryOperation, MissingProperties, SwappedGenericTypeParameter, OptionalValueAccess, MissingUnionProperty, TypesAreUnrelated,
+        NormalizationTooComplex, TypePackMismatch, DynamicPropertyLookupOnClassesUnsafe, UninhabitedTypeFamily, UninhabitedTypePackFamily, WhereClauseNeeded, PackWhereClauseNeeded>;
 
 struct TypeErrorSummary
 {

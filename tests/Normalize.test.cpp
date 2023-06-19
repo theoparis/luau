@@ -494,7 +494,7 @@ struct NormalizeFixture : Fixture
             REQUIRE(node);
             AstStatTypeAlias* alias = node->as<AstStatTypeAlias>();
             REQUIRE(alias);
-            TypeId* originalTy = getMainModule()->astOriginalResolvedTypes.find(alias->type);
+            TypeId* originalTy = getMainModule()->astResolvedTypes.find(alias->type);
             REQUIRE(originalTy);
             return normalizer.normalize(*originalTy);
         }
@@ -732,15 +732,11 @@ TEST_CASE_FIXTURE(NormalizeFixture, "narrow_union_of_classes_with_intersection")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "intersection_of_metatables_where_the_metatable_is_top_or_bottom")
 {
-    ScopedFastFlag sff{"LuauNormalizeMetatableFixes", true};
-
     CHECK("{ @metatable *error-type*, {|  |} }" == toString(normal("Mt<{}, any> & Mt<{}, err>")));
 }
 
 TEST_CASE_FIXTURE(NormalizeFixture, "crazy_metatable")
 {
-    ScopedFastFlag sff{"LuauNormalizeMetatableFixes", true};
-
     CHECK("never" == toString(normal("Mt<{}, number> & Mt<{}, string>")));
 }
 
@@ -795,14 +791,21 @@ TEST_CASE_FIXTURE(NormalizeFixture, "normalize_blocked_types")
     CHECK_EQ(normalizer.typeFromNormal(*norm), &blocked);
 }
 
-TEST_CASE_FIXTURE(NormalizeFixture, "normalize_pending_expansion_types")
+TEST_CASE_FIXTURE(NormalizeFixture, "normalize_is_exactly_number")
 {
-    AstName name;
-    Type pending{PendingExpansionType{std::nullopt, name, {}, {}}};
+    const NormalizedType* number = normalizer.normalize(builtinTypes->numberType);
+    // 1. all types for which Types::number say true for, NormalizedType::isExactlyNumber should say true as well
+    CHECK(Luau::isNumber(builtinTypes->numberType) == number->isExactlyNumber());
+    // 2. isExactlyNumber should handle cases like `number & number`
+    TypeId intersection = arena.addType(IntersectionType{{builtinTypes->numberType, builtinTypes->numberType}});
+    const NormalizedType* normIntersection = normalizer.normalize(intersection);
+    CHECK(normIntersection->isExactlyNumber());
 
-    const NormalizedType* norm = normalizer.normalize(&pending);
+    // 3. isExactlyNumber should reject things that are definitely not precisely numbers `number | any`
 
-    CHECK_EQ(normalizer.typeFromNormal(*norm), &pending);
+    TypeId yoonion = arena.addType(UnionType{{builtinTypes->anyType, builtinTypes->numberType}});
+    const NormalizedType* unionIntersection = normalizer.normalize(yoonion);
+    CHECK(!unionIntersection->isExactlyNumber());
 }
 
 TEST_SUITE_END();

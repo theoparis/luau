@@ -29,11 +29,13 @@ struct IrLoweringX64
 
     void lowerInst(IrInst& inst, uint32_t index, IrBlock& next);
     void finishBlock();
+    void finishFunction();
 
     bool hasError() const;
 
     bool isFallthroughBlock(IrBlock target, IrBlock next);
     void jumpOrFallthrough(IrBlock& target, IrBlock& next);
+    void jumpOrAbortOnUndef(ConditionX64 cond, ConditionX64 condInverse, IrOp targetOrUndef);
 
     void storeDoubleAsFloat(OperandX64 dst, IrOp src);
 
@@ -45,13 +47,19 @@ struct IrLoweringX64
 
     IrConst constOp(IrOp op) const;
     uint8_t tagOp(IrOp op) const;
-    bool boolOp(IrOp op) const;
     int intOp(IrOp op) const;
     unsigned uintOp(IrOp op) const;
     double doubleOp(IrOp op) const;
 
     IrBlock& blockOp(IrOp op) const;
     Label& labelOp(IrOp op) const;
+
+    struct InterruptHandler
+    {
+        Label self;
+        unsigned int pcpos;
+        Label next;
+    };
 
     AssemblyBuilderX64& build;
     ModuleHelpers& helpers;
@@ -62,6 +70,8 @@ struct IrLoweringX64
     IrRegAllocX64 regs;
 
     IrValueLocationTracking valueTracker;
+
+    std::vector<InterruptHandler> interruptHandlers;
 };
 
 } // namespace X64

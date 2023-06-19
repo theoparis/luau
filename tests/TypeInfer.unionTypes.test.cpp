@@ -354,10 +354,7 @@ a.x = 2
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     auto s = toString(result.errors[0]);
-    if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK_EQ("Value of type '{| x: number, y: number |}?' could be nil", s);
-    else
-        CHECK_EQ("Value of type '({| x: number |} & {| y: number |})?' could be nil", s);
+    CHECK_EQ("Value of type '({| x: number |} & {| y: number |})?' could be nil", s);
 }
 
 TEST_CASE_FIXTURE(Fixture, "optional_length_error")

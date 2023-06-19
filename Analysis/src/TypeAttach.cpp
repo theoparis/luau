@@ -9,8 +9,11 @@
 #include "Luau/TypeInfer.h"
 #include "Luau/TypePack.h"
 #include "Luau/Type.h"
+#include "Luau/TypeFamily.h"
 
 #include <string>
+
+LUAU_FASTFLAG(LuauParseDeclareClassIndexer);
 
 static char* allocateString(Luau::Allocator& allocator, std::string_view contents)
 {
@@ -226,7 +229,17 @@ public:
             idx++;
         }
 
-        return allocator->alloc<AstTypeTable>(Location(), props);
+        AstTableIndexer* indexer = nullptr;
+        if (FFlag::LuauParseDeclareClassIndexer && ctv.indexer)
+        {
+            RecursionCounter counter(&count);
+
+            indexer = allocator->alloc<AstTableIndexer>();
+            indexer->indexType = Luau::visit(*this, ctv.indexer->indexType->ty);
+            indexer->resultType = Luau::visit(*this, ctv.indexer->indexResultType->ty);
+        }
+
+        return allocator->alloc<AstTypeTable>(Location(), props, indexer);
     }
 
     AstType* operator()(const FunctionType& ftv)
@@ -362,6 +375,10 @@ public:
         // FIXME: do the same thing we do with ErrorType
         throw InternalCompilerError("Cannot convert NegationType into AstNode");
     }
+    AstType* operator()(const TypeFamilyInstanceType& tfit)
+    {
+        return allocator->alloc<AstTypeReference>(Location(), std::nullopt, AstName{tfit.family->name.c_str()}, std::nullopt, Location());
+    }
 
 private:
     Allocator* allocator;
@@ -430,6 +447,11 @@ public:
     AstTypePack* operator()(const Unifiable::Error&) const
     {
         return allocator->alloc<AstTypePackGeneric>(Location(), AstName("Unifiable<Error>"));
+    }
+
+    AstTypePack* operator()(const TypeFamilyInstanceTypePack& tfitp) const
+    {
+        return allocator->alloc<AstTypePackGeneric>(Location(), AstName(tfitp.family->name.c_str()));
     }
 
 private:

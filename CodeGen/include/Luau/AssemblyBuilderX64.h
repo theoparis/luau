@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Luau/Common.h"
+#include "Luau/DenseHash.h"
 #include "Luau/Label.h"
 #include "Luau/ConditionX64.h"
 #include "Luau/OperandX64.h"
@@ -97,7 +98,10 @@ public:
     void call(Label& label);
     void call(OperandX64 op);
 
+    void lea(RegisterX64 lhs, Label& label);
+
     void int3();
+    void ud2();
 
     void bsr(RegisterX64 dst, OperandX64 src);
     void bsf(RegisterX64 dst, OperandX64 src);
@@ -241,6 +245,7 @@ private:
     LUAU_NOINLINE void log(const char* opcode, OperandX64 op1, OperandX64 op2, OperandX64 op3, OperandX64 op4);
     LUAU_NOINLINE void log(Label label);
     LUAU_NOINLINE void log(const char* opcode, Label label);
+    LUAU_NOINLINE void log(const char* opcode, RegisterX64 reg, Label label);
     void log(OperandX64 op);
 
     const char* getSizeName(SizeX64 size) const;
@@ -249,6 +254,8 @@ private:
     uint32_t nextLabel = 1;
     std::vector<Label> pendingLabels;
     std::vector<uint32_t> labelLocations;
+
+    DenseHashMap<uint64_t, int32_t> constCache64;
 
     bool finalized = false;
 

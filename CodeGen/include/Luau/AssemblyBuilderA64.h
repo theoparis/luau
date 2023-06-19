@@ -56,7 +56,7 @@ public:
     void eor(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, int shift = 0);
     void bic(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, int shift = 0);
     void tst(RegisterA64 src1, RegisterA64 src2, int shift = 0);
-    void mvn(RegisterA64 dst, RegisterA64 src);
+    void mvn_(RegisterA64 dst, RegisterA64 src);
 
     // Bitwise with immediate
     // Note: immediate must have a single contiguous sequence of 1 bits set of length 1..31
@@ -79,6 +79,12 @@ public:
     void lsr(RegisterA64 dst, RegisterA64 src1, uint8_t src2);
     void asr(RegisterA64 dst, RegisterA64 src1, uint8_t src2);
     void ror(RegisterA64 dst, RegisterA64 src1, uint8_t src2);
+
+    // Bitfields
+    void ubfiz(RegisterA64 dst, RegisterA64 src, uint8_t f, uint8_t w);
+    void ubfx(RegisterA64 dst, RegisterA64 src, uint8_t f, uint8_t w);
+    void sbfiz(RegisterA64 dst, RegisterA64 src, uint8_t f, uint8_t w);
+    void sbfx(RegisterA64 dst, RegisterA64 src, uint8_t f, uint8_t w);
 
     // Load
     // Note: paired loads are currently omitted for simplicity
@@ -151,6 +157,8 @@ public:
     void fcmpz(RegisterA64 src);
     void fcsel(RegisterA64 dst, RegisterA64 src1, RegisterA64 src2, ConditionA64 cond);
 
+    void udf();
+
     // Run final checks
     bool finalize();
 
@@ -199,7 +207,7 @@ private:
     void placeR1(const char* name, RegisterA64 dst, RegisterA64 src, uint32_t op);
     void placeI12(const char* name, RegisterA64 dst, RegisterA64 src1, int src2, uint8_t op);
     void placeI16(const char* name, RegisterA64 dst, int src, uint8_t op, int shift = 0);
-    void placeA(const char* name, RegisterA64 dst, AddressA64 src, uint8_t op, uint8_t size, int sizelog);
+    void placeA(const char* name, RegisterA64 dst, AddressA64 src, uint16_t opsize, int sizelog);
     void placeB(const char* name, Label& label, uint8_t op);
     void placeBC(const char* name, Label& label, uint8_t op, uint8_t cond);
     void placeBCR(const char* name, Label& label, uint8_t op, RegisterA64 cond);
@@ -212,7 +220,7 @@ private:
     void placeFCMP(const char* name, RegisterA64 src1, RegisterA64 src2, uint8_t op, uint8_t opc);
     void placeFMOV(const char* name, RegisterA64 dst, double src, uint32_t op);
     void placeBM(const char* name, RegisterA64 dst, RegisterA64 src1, uint32_t src2, uint8_t op);
-    void placeBFM(const char* name, RegisterA64 dst, RegisterA64 src1, uint8_t src2, uint8_t op, int immr, int imms);
+    void placeBFM(const char* name, RegisterA64 dst, RegisterA64 src1, int src2, uint8_t op, int immr, int imms);
 
     void place(uint32_t word);
 

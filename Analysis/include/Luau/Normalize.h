@@ -64,6 +64,7 @@ public:
 
     bool operator==(const TypeIds& there) const;
     size_t getHash() const;
+    bool isNever() const;
 };
 
 } // namespace Luau
@@ -267,7 +268,29 @@ struct NormalizedType
 
     NormalizedType(NormalizedType&&) = default;
     NormalizedType& operator=(NormalizedType&&) = default;
+
+    // IsType functions
+    /// Returns true if the type is exactly a number. Behaves like Type::isNumber()
+    bool isExactlyNumber() const;
+
+    /// Returns true if the type is a subtype of string(it could be a singleton). Behaves like Type::isString()
+    bool isSubtypeOfString() const;
+
+    // Helpers that improve readability of the above (they just say if the component is present)
+    bool hasTops() const;
+    bool hasBooleans() const;
+    bool hasClasses() const;
+    bool hasErrors() const;
+    bool hasNils() const;
+    bool hasNumbers() const;
+    bool hasStrings() const;
+    bool hasThreads() const;
+    bool hasTables() const;
+    bool hasFunctions() const;
+    bool hasTyvars() const;
 };
+
+
 
 class Normalizer
 {
@@ -275,14 +298,19 @@ class Normalizer
     std::unordered_map<const TypeIds*, TypeId> cachedIntersections;
     std::unordered_map<const TypeIds*, TypeId> cachedUnions;
     std::unordered_map<const TypeIds*, std::unique_ptr<TypeIds>> cachedTypeIds;
+
+    DenseHashMap<TypeId, bool> cachedIsInhabited{nullptr};
+    DenseHashMap<std::pair<TypeId, TypeId>, bool, TypeIdPairHash> cachedIsInhabitedIntersection{{nullptr, nullptr}};
+
     bool withinResourceLimits();
 
 public:
     TypeArena* arena;
     NotNull<BuiltinTypes> builtinTypes;
     NotNull<UnifierSharedState> sharedState;
+    bool cacheInhabitance = false;
 
-    Normalizer(TypeArena* arena, NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> sharedState);
+    Normalizer(TypeArena* arena, NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> sharedState, bool cacheInhabitance = false);
     Normalizer(const Normalizer&) = delete;
     Normalizer(Normalizer&&) = delete;
     Normalizer() = delete;
@@ -345,8 +373,10 @@ public:
     bool normalizeIntersections(const std::vector<TypeId>& intersections, NormalizedType& outType);
 
     // Check for inhabitance
-    bool isInhabited(TypeId ty, std::unordered_set<TypeId> seen = {});
+    bool isInhabited(TypeId ty);
+    bool isInhabited(TypeId ty, std::unordered_set<TypeId> seen);
     bool isInhabited(const NormalizedType* norm, std::unordered_set<TypeId> seen = {});
+
     // Check for intersections being inhabited
     bool isIntersectionInhabited(TypeId left, TypeId right);
 

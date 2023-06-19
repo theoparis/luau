@@ -70,7 +70,7 @@ TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "Unary")
 {
     SINGLE_COMPARE(neg(x0, x1), 0xCB0103E0);
     SINGLE_COMPARE(neg(w0, w1), 0x4B0103E0);
-    SINGLE_COMPARE(mvn(x0, x1), 0xAA2103E0);
+    SINGLE_COMPARE(mvn_(x0, x1), 0xAA2103E0);
 
     SINGLE_COMPARE(clz(x0, x1), 0xDAC01020);
     SINGLE_COMPARE(clz(w0, w1), 0x5AC01020);
@@ -133,6 +133,19 @@ TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "BinaryImm")
     SINGLE_COMPARE(asr(x1, x2, 1), 0x9341FC41);
     SINGLE_COMPARE(ror(w1, w2, 1), 0x13820441);
     SINGLE_COMPARE(ror(x1, x2, 1), 0x93C20441);
+}
+
+TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "Bitfield")
+{
+    SINGLE_COMPARE(ubfiz(x1, x2, 37, 5), 0xD35B1041);
+    SINGLE_COMPARE(ubfx(x1, x2, 37, 5), 0xD365A441);
+    SINGLE_COMPARE(sbfiz(x1, x2, 37, 5), 0x935B1041);
+    SINGLE_COMPARE(sbfx(x1, x2, 37, 5), 0x9365A441);
+
+    SINGLE_COMPARE(ubfiz(w1, w2, 17, 5), 0x530F1041);
+    SINGLE_COMPARE(ubfx(w1, w2, 17, 5), 0x53115441);
+    SINGLE_COMPARE(sbfiz(w1, w2, 17, 5), 0x130F1041);
+    SINGLE_COMPARE(sbfx(w1, w2, 17, 5), 0x13115441);
 }
 
 TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "Loads")
@@ -338,6 +351,7 @@ TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "AddressOfLabel")
 TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "FPBasic")
 {
     SINGLE_COMPARE(fmov(d0, d1), 0x1E604020);
+    SINGLE_COMPARE(fmov(d0, x1), 0x9E670020);
 }
 
 TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "FPMath")
@@ -441,6 +455,30 @@ TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "Conditionals")
     SINGLE_COMPARE(cset(x1, ConditionA64::Less), 0x9A9FA7E1);
 }
 
+TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "Undefined")
+{
+    SINGLE_COMPARE(udf(), 0x00000000);
+}
+
+TEST_CASE_FIXTURE(AssemblyBuilderA64Fixture, "PrePostIndexing")
+{
+    SINGLE_COMPARE(ldr(x0, mem(x1, 1)), 0xF8401020);
+    SINGLE_COMPARE(ldr(x0, mem(x1, 1, AddressKindA64::pre)), 0xF8401C20);
+    SINGLE_COMPARE(ldr(x0, mem(x1, 1, AddressKindA64::post)), 0xF8401420);
+
+    SINGLE_COMPARE(ldr(q0, mem(x1, 1)), 0x3CC01020);
+    SINGLE_COMPARE(ldr(q0, mem(x1, 1, AddressKindA64::pre)), 0x3CC01C20);
+    SINGLE_COMPARE(ldr(q0, mem(x1, 1, AddressKindA64::post)), 0x3CC01420);
+
+    SINGLE_COMPARE(str(x0, mem(x1, 1)), 0xF8001020);
+    SINGLE_COMPARE(str(x0, mem(x1, 1, AddressKindA64::pre)), 0xF8001C20);
+    SINGLE_COMPARE(str(x0, mem(x1, 1, AddressKindA64::post)), 0xF8001420);
+
+    SINGLE_COMPARE(str(q0, mem(x1, 1)), 0x3C801020);
+    SINGLE_COMPARE(str(q0, mem(x1, 1, AddressKindA64::pre)), 0x3C801C20);
+    SINGLE_COMPARE(str(q0, mem(x1, 1, AddressKindA64::post)), 0x3C801420);
+}
+
 TEST_CASE("LogTest")
 {
     AssemblyBuilderA64 build(/* logText= */ true);
@@ -480,6 +518,12 @@ TEST_CASE("LogTest")
 
     build.fcvt(s1, d2);
 
+    build.ubfx(x1, x2, 37, 5);
+
+    build.ldr(x0, mem(x1, 1));
+    build.ldr(x0, mem(x1, 1, AddressKindA64::pre));
+    build.ldr(x0, mem(x1, 1, AddressKindA64::post));
+
     build.setLabel(l);
     build.ret();
 
@@ -512,6 +556,10 @@ TEST_CASE("LogTest")
  fmov        d0,#0.25
  tbz         x0,#5,.L1
  fcvt        s1,d2
+ ubfx        x1,x2,#3705
+ ldr         x0,[x1,#1]
+ ldr         x0,[x1,#1]!
+ ldr         x0,[x1]!,#1
 .L1:
  ret
 )";

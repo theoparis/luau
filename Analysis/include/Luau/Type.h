@@ -23,6 +23,7 @@
 
 LUAU_FASTINT(LuauTableTypeMaximumStringifierLength)
 LUAU_FASTINT(LuauTypeMaximumStringifierLength)
+LUAU_FASTFLAG(LuauTypecheckClassTypeIndexers)
 
 namespace Luau
 {
@@ -30,6 +31,8 @@ namespace Luau
 struct TypeArena;
 struct Scope;
 using ScopePtr = std::shared_ptr<Scope>;
+
+struct TypeFamily;
 
 /**
  * There are three kinds of type variables:
@@ -346,7 +349,9 @@ struct FunctionType
     DcrMagicFunction dcrMagicFunction = nullptr;
     DcrMagicRefinement dcrMagicRefinement = nullptr;
     bool hasSelf;
-    bool hasNoGenerics = false;
+    // `hasNoFreeOrGenericTypes` should be true if and only if the type does not have any free or generic types present inside it.
+    // this flag is used as an optimization to exit early from procedures that manipulate free or generic types.
+    bool hasNoFreeOrGenericTypes = false;
 };
 
 enum class TableState
@@ -383,7 +388,13 @@ struct Property
     static Property writeonly(TypeId ty);
     static Property rw(TypeId ty);                 // Shared read-write type.
     static Property rw(TypeId read, TypeId write); // Separate read-write type.
-    static std::optional<Property> create(std::optional<TypeId> read, std::optional<TypeId> write);
+
+    // Invariant: at least one of the two optionals are not nullopt!
+    // If the read type is not nullopt, but the write type is, then the property is readonly.
+    // If the read type is nullopt, but the write type is not, then the property is writeonly.
+    // If the read and write types are not nullopt, then the property is read and write.
+    // Otherwise, an assertion where read and write types are both nullopt will be tripped.
+    static Property create(std::optional<TypeId> read, std::optional<TypeId> write);
 
     bool deprecated = false;
     std::string deprecatedSuggestion;
@@ -408,6 +419,8 @@ struct Property
     // TODO: Kill this in favor of exposing `readTy`/`writeTy` directly? If we do, we'll lose the asserts which will be useful while debugging.
     std::optional<TypeId> readType() const;
     std::optional<TypeId> writeType() const;
+
+    bool isShared() const;
 
 private:
     std::optional<TypeId> readTy;
@@ -489,6 +502,7 @@ struct ClassType
     Tags tags;
     std::shared_ptr<ClassUserData> userData;
     ModuleName definitionModuleName;
+    std::optional<TableIndexer> indexer;
 
     ClassType(Name name, Props props, std::optional<TypeId> parent, std::optional<TypeId> metatable, Tags tags,
         std::shared_ptr<ClassUserData> userData, ModuleName definitionModuleName)
@@ -501,6 +515,35 @@ struct ClassType
         , definitionModuleName(definitionModuleName)
     {
     }
+
+    ClassType(Name name, Props props, std::optional<TypeId> parent, std::optional<TypeId> metatable, Tags tags,
+        std::shared_ptr<ClassUserData> userData, ModuleName definitionModuleName, std::optional<TableIndexer> indexer)
+        : name(name)
+        , props(props)
+        , parent(parent)
+        , metatable(metatable)
+        , tags(tags)
+        , userData(userData)
+        , definitionModuleName(definitionModuleName)
+        , indexer(indexer)
+    {
+        LUAU_ASSERT(FFlag::LuauTypecheckClassTypeIndexers);
+    }
+};
+
+/**
+ * An instance of a type family that has not yet been reduced to a more concrete
+ * type. The constraint solver receives a constraint to reduce each
+ * TypeFamilyInstanceType to a concrete type. A design detail is important to
+ * note here: the parameters for this instantiation of the type family are
+ * contained within this type, so that they can be substituted.
+ */
+struct TypeFamilyInstanceType
+{
+    NotNull<const TypeFamily> family;
+
+    std::vector<TypeId> typeArguments;
+    std::vector<TypePackId> packArguments;
 };
 
 struct TypeFun
@@ -579,30 +622,26 @@ struct IntersectionType
 struct LazyType
 {
     LazyType() = default;
-    LazyType(std::function<TypeId()> thunk_DEPRECATED, std::function<void(LazyType&)> unwrap)
-        : thunk_DEPRECATED(thunk_DEPRECATED)
-        , unwrap(unwrap)
+    LazyType(std::function<void(LazyType&)> unwrap)
+        : unwrap(unwrap)
     {
     }
 
     // std::atomic is sad and requires a manual copy
     LazyType(const LazyType& rhs)
-        : thunk_DEPRECATED(rhs.thunk_DEPRECATED)
-        , unwrap(rhs.unwrap)
+        : unwrap(rhs.unwrap)
         , unwrapped(rhs.unwrapped.load())
     {
     }
 
     LazyType(LazyType&& rhs) noexcept
-        : thunk_DEPRECATED(std::move(rhs.thunk_DEPRECATED))
-        , unwrap(std::move(rhs.unwrap))
+        : unwrap(std::move(rhs.unwrap))
         , unwrapped(rhs.unwrapped.load())
     {
     }
 
     LazyType& operator=(const LazyType& rhs)
     {
-        thunk_DEPRECATED = rhs.thunk_DEPRECATED;
         unwrap = rhs.unwrap;
         unwrapped = rhs.unwrapped.load();
 
@@ -611,14 +650,11 @@ struct LazyType
 
     LazyType& operator=(LazyType&& rhs) noexcept
     {
-        thunk_DEPRECATED = std::move(rhs.thunk_DEPRECATED);
         unwrap = std::move(rhs.unwrap);
         unwrapped = rhs.unwrapped.load();
 
         return *this;
     }
-
-    std::function<TypeId()> thunk_DEPRECATED;
 
     std::function<void(LazyType&)> unwrap;
     std::atomic<TypeId> unwrapped = nullptr;
@@ -640,8 +676,9 @@ struct NegationType
 
 using ErrorType = Unifiable::Error;
 
-using TypeVariant = Unifiable::Variant<TypeId, FreeType, GenericType, PrimitiveType, BlockedType, PendingExpansionType, SingletonType, FunctionType,
-    TableType, MetatableType, ClassType, AnyType, UnionType, IntersectionType, LazyType, UnknownType, NeverType, NegationType>;
+using TypeVariant =
+    Unifiable::Variant<TypeId, FreeType, GenericType, PrimitiveType, BlockedType, PendingExpansionType, SingletonType, FunctionType, TableType,
+        MetatableType, ClassType, AnyType, UnionType, IntersectionType, LazyType, UnknownType, NeverType, NegationType, TypeFamilyInstanceType>;
 
 struct Type final
 {

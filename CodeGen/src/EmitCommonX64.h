@@ -53,31 +53,6 @@ constexpr OperandX64 sCode = qword[rsp + kStackSize + 8];    // Instruction* cod
 constexpr OperandX64 sTemporarySlot = addr[rsp + kStackSize + 16];
 constexpr OperandX64 sSpillArea = addr[rsp + kStackSize + 24];
 
-// TODO: These should be replaced with a portable call function that checks the ABI at runtime and reorders moves accordingly to avoid conflicts
-#if defined(_WIN32)
-
-constexpr RegisterX64 rArg1 = rcx;
-constexpr RegisterX64 rArg2 = rdx;
-constexpr RegisterX64 rArg3 = r8;
-constexpr RegisterX64 rArg4 = r9;
-constexpr RegisterX64 rArg5 = noreg;
-constexpr RegisterX64 rArg6 = noreg;
-constexpr OperandX64 sArg5 = qword[rsp + 32];
-constexpr OperandX64 sArg6 = qword[rsp + 40];
-
-#else
-
-constexpr RegisterX64 rArg1 = rdi;
-constexpr RegisterX64 rArg2 = rsi;
-constexpr RegisterX64 rArg3 = rdx;
-constexpr RegisterX64 rArg4 = rcx;
-constexpr RegisterX64 rArg5 = r8;
-constexpr RegisterX64 rArg6 = r9;
-constexpr OperandX64 sArg5 = noreg;
-constexpr OperandX64 sArg6 = noreg;
-
-#endif
-
 inline OperandX64 luauReg(int ri)
 {
     return xmmword[rBase + ri * sizeof(TValue)];
@@ -136,7 +111,7 @@ inline OperandX64 luauNodeKeyValue(RegisterX64 node)
 // Note: tag has dirty upper bits
 inline OperandX64 luauNodeKeyTag(RegisterX64 node)
 {
-    return dword[node + offsetof(LuaNode, key) + kOffsetOfTKeyTag];
+    return dword[node + offsetof(LuaNode, key) + kOffsetOfTKeyTagNext];
 }
 
 inline OperandX64 luauNodeValue(RegisterX64 node)
@@ -184,33 +159,6 @@ inline void jumpIfTruthy(AssemblyBuilderX64& build, int ri, Label& target, Label
     build.jcc(ConditionX64::NotEqual, target); // true if boolean value is 'true'
 }
 
-inline void jumpIfNodeKeyTagIsNot(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 node, lua_Type tag, Label& label)
-{
-    tmp.size = SizeX64::dword;
-
-    build.mov(tmp, luauNodeKeyTag(node));
-    build.and_(tmp, kLuaNodeTagMask);
-    build.cmp(tmp, tag);
-    build.jcc(ConditionX64::NotEqual, label);
-}
-
-inline void jumpIfNodeValueTagIs(AssemblyBuilderX64& build, RegisterX64 node, lua_Type tag, Label& label)
-{
-    build.cmp(dword[node + offsetof(LuaNode, val) + offsetof(TValue, tt)], tag);
-    build.jcc(ConditionX64::Equal, label);
-}
-
-inline void jumpIfNodeKeyNotInExpectedSlot(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 node, OperandX64 expectedKey, Label& label)
-{
-    jumpIfNodeKeyTagIsNot(build, tmp, node, LUA_TSTRING, label);
-
-    build.mov(tmp, expectedKey);
-    build.cmp(tmp, luauNodeKeyValue(node));
-    build.jcc(ConditionX64::NotEqual, label);
-
-    jumpIfNodeValueTagIs(build, node, LUA_TNIL, label);
-}
-
 void jumpOnNumberCmp(AssemblyBuilderX64& build, RegisterX64 tmp, OperandX64 lhs, OperandX64 rhs, IrCondition cond, Label& label);
 void jumpOnAnyCmpFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int rb, IrCondition cond, Label& label);
 
@@ -229,10 +177,12 @@ void callStepGc(IrRegAllocX64& regs, AssemblyBuilderX64& build);
 
 void emitExit(AssemblyBuilderX64& build, bool continueInVm);
 void emitUpdateBase(AssemblyBuilderX64& build);
-void emitInterrupt(IrRegAllocX64& regs, AssemblyBuilderX64& build, int pcpos);
-void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, NativeState& data, int op, int pcpos);
+void emitInterrupt(AssemblyBuilderX64& build);
+void emitFallback(IrRegAllocX64& regs, AssemblyBuilderX64& build, int offset, int pcpos);
 
 void emitContinueCallInVm(AssemblyBuilderX64& build);
+
+void emitReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers);
 
 } // namespace X64
 } // namespace CodeGen

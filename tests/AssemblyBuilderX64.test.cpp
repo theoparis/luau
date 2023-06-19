@@ -537,8 +537,23 @@ TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "AVXTernaryInstructionForms")
 TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "MiscInstructions")
 {
     SINGLE_COMPARE(int3(), 0xcc);
+    SINGLE_COMPARE(ud2(), 0x0f, 0x0b);
     SINGLE_COMPARE(bsr(eax, edx), 0x0f, 0xbd, 0xc2);
     SINGLE_COMPARE(bsf(eax, edx), 0x0f, 0xbc, 0xc2);
+}
+
+TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "LabelLea")
+{
+    CHECK(check(
+        [](AssemblyBuilderX64& build) {
+            Label fn;
+            build.lea(rax, fn);
+            build.ret();
+
+            build.setLabel(fn);
+            build.ret();
+        },
+        {0x48, 0x8d, 0x05, 0x01, 0x00, 0x00, 0x00, 0xc3, 0xc3}));
 }
 
 TEST_CASE("LogTest")
@@ -560,6 +575,7 @@ TEST_CASE("LogTest")
     Label start = build.setLabel();
     build.cmp(rsi, rdi);
     build.jcc(ConditionX64::Equal, start);
+    build.lea(rcx, start);
 
     build.jmp(qword[rdx]);
     build.vaddps(ymm9, ymm12, ymmword[rbp + 0xc]);
@@ -604,6 +620,7 @@ TEST_CASE("LogTest")
 .L1:
  cmp         rsi,rdi
  je          .L1
+ lea         rcx,.L1
  jmp         qword ptr [rdx]
  vaddps      ymm9,ymm12,ymmword ptr [rbp+0Ch]
  vaddpd      ymm2,ymm7,qword ptr [.start-8]
@@ -684,15 +701,30 @@ TEST_CASE("ConstantStorage")
 
     build.finalize();
 
-    LUAU_ASSERT(build.data.size() == 12004);
+    CHECK(build.data.size() == 12004);
 
     for (int i = 0; i <= 3000; i++)
     {
-        LUAU_ASSERT(build.data[i * 4 + 0] == 0x00);
-        LUAU_ASSERT(build.data[i * 4 + 1] == 0x00);
-        LUAU_ASSERT(build.data[i * 4 + 2] == 0x80);
-        LUAU_ASSERT(build.data[i * 4 + 3] == 0x3f);
+        CHECK(build.data[i * 4 + 0] == 0x00);
+        CHECK(build.data[i * 4 + 1] == 0x00);
+        CHECK(build.data[i * 4 + 2] == 0x80);
+        CHECK(build.data[i * 4 + 3] == 0x3f);
     }
+}
+
+TEST_CASE("ConstantCaching")
+{
+    AssemblyBuilderX64 build(/* logText= */ false);
+
+    OperandX64 two = build.f64(2);
+
+    // Force data relocation
+    for (int i = 0; i < 4096; i++)
+        build.f64(i);
+
+    CHECK(build.f64(2).imm == two.imm);
+
+    build.finalize();
 }
 
 TEST_SUITE_END();

@@ -18,10 +18,10 @@ LUAU_FASTFLAGVARIABLE(DebugLuauCheckNormalizeInvariant, false)
 LUAU_FASTINTVARIABLE(LuauNormalizeIterationLimit, 1200);
 LUAU_FASTINTVARIABLE(LuauNormalizeCacheLimit, 100000);
 LUAU_FASTFLAGVARIABLE(LuauNormalizeBlockedTypes, false);
-LUAU_FASTFLAGVARIABLE(LuauNormalizeMetatableFixes, false);
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 LUAU_FASTFLAG(LuauUninhabitedSubAnything2)
 LUAU_FASTFLAG(LuauTransitiveSubtyping)
+LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 
 namespace Luau
 {
@@ -106,6 +106,14 @@ void TypeIds::retain(const TypeIds& there)
 size_t TypeIds::getHash() const
 {
     return hash;
+}
+
+bool TypeIds::isNever() const
+{
+    return std::all_of(begin(), end(), [&](TypeId i) {
+        // If each typeid is never, then I guess typeid's is also never?
+        return get<NeverType>(i) != nullptr;
+    });
 }
 
 bool TypeIds::operator==(const TypeIds& there) const
@@ -228,6 +236,74 @@ NormalizedType::NormalizedType(NotNull<BuiltinTypes> builtinTypes)
 {
 }
 
+bool NormalizedType::isExactlyNumber() const
+{
+    return hasNumbers() && !hasTops() && !hasBooleans() && !hasClasses() && !hasErrors() && !hasNils() && !hasStrings() && !hasThreads() &&
+           !hasTables() && !hasFunctions() && !hasTyvars();
+}
+
+bool NormalizedType::isSubtypeOfString() const
+{
+    return hasStrings() && !hasTops() && !hasBooleans() && !hasClasses() && !hasErrors() && !hasNils() && !hasNumbers() && !hasThreads() &&
+           !hasTables() && !hasFunctions() && !hasTyvars();
+}
+
+bool NormalizedType::hasTops() const
+{
+    return !get<NeverType>(tops);
+}
+
+
+bool NormalizedType::hasBooleans() const
+{
+    return !get<NeverType>(booleans);
+}
+
+bool NormalizedType::hasClasses() const
+{
+    return !classes.isNever();
+}
+
+bool NormalizedType::hasErrors() const
+{
+    return !get<NeverType>(errors);
+}
+
+bool NormalizedType::hasNils() const
+{
+    return !get<NeverType>(nils);
+}
+
+bool NormalizedType::hasNumbers() const
+{
+    return !get<NeverType>(numbers);
+}
+
+bool NormalizedType::hasStrings() const
+{
+    return !strings.isNever();
+}
+
+bool NormalizedType::hasThreads() const
+{
+    return !get<NeverType>(threads);
+}
+
+bool NormalizedType::hasTables() const
+{
+    return !tables.isNever();
+}
+
+bool NormalizedType::hasFunctions() const
+{
+    return !functions.isNever();
+}
+
+bool NormalizedType::hasTyvars() const
+{
+    return !tyvars.empty();
+}
+
 static bool isShallowInhabited(const NormalizedType& norm)
 {
     // This test is just a shallow check, for example it returns `true` for `{ p : never }`
@@ -268,6 +344,22 @@ bool Normalizer::isInhabited(const NormalizedType* norm, std::unordered_set<Type
     return false;
 }
 
+bool Normalizer::isInhabited(TypeId ty)
+{
+    if (cacheInhabitance)
+    {
+        if (bool* result = cachedIsInhabited.find(ty))
+            return *result;
+    }
+
+    bool result = isInhabited(ty, {});
+
+    if (cacheInhabitance)
+        cachedIsInhabited[ty] = result;
+
+    return result;
+}
+
 bool Normalizer::isInhabited(TypeId ty, std::unordered_set<TypeId> seen)
 {
     // TODO: use log.follow(ty), CLI-64291
@@ -288,8 +380,18 @@ bool Normalizer::isInhabited(TypeId ty, std::unordered_set<TypeId> seen)
     {
         for (const auto& [_, prop] : ttv->props)
         {
-            if (!isInhabited(prop.type(), seen))
-                return false;
+            if (FFlag::DebugLuauReadWriteProperties)
+            {
+                // A table enclosing a read property whose type is uninhabitable is also itself uninhabitable,
+                // but not its write property. That just means the write property doesn't exist, and so is readonly.
+                if (auto ty = prop.readType(); ty && !isInhabited(*ty, seen))
+                    return false;
+            }
+            else
+            {
+                if (!isInhabited(prop.type(), seen))
+                    return false;
+            }
         }
         return true;
     }
@@ -305,14 +407,32 @@ bool Normalizer::isIntersectionInhabited(TypeId left, TypeId right)
 {
     left = follow(left);
     right = follow(right);
+
+    if (cacheInhabitance)
+    {
+        if (bool* result = cachedIsInhabitedIntersection.find({left, right}))
+            return *result;
+    }
+
     std::unordered_set<TypeId> seen = {};
     seen.insert(left);
     seen.insert(right);
 
     NormalizedType norm{builtinTypes};
     if (!normalizeIntersections({left, right}, norm))
+    {
+        if (cacheInhabitance)
+            cachedIsInhabitedIntersection[{left, right}] = false;
+
         return false;
-    return isInhabited(&norm, seen);
+    }
+
+    bool result = isInhabited(&norm, seen);
+
+    if (cacheInhabitance)
+        cachedIsInhabitedIntersection[{left, right}] = result;
+
+    return result;
 }
 
 static int tyvarIndex(TypeId ty)
@@ -516,7 +636,8 @@ static bool areNormalizedClasses(const NormalizedClassType& tys)
 
 static bool isPlainTyvar(TypeId ty)
 {
-    return (get<FreeType>(ty) || get<GenericType>(ty) || (FFlag::LuauNormalizeBlockedTypes && get<BlockedType>(ty)) || get<PendingExpansionType>(ty));
+    return (get<FreeType>(ty) || get<GenericType>(ty) || (FFlag::LuauNormalizeBlockedTypes && get<BlockedType>(ty)) ||
+            get<PendingExpansionType>(ty) || get<TypeFamilyInstanceType>(ty));
 }
 
 static bool isNormalizedTyvar(const NormalizedTyvars& tyvars)
@@ -558,10 +679,11 @@ static void assertInvariant(const NormalizedType& norm)
 #endif
 }
 
-Normalizer::Normalizer(TypeArena* arena, NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> sharedState)
+Normalizer::Normalizer(TypeArena* arena, NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> sharedState, bool cacheInhabitance)
     : arena(arena)
     , builtinTypes(builtinTypes)
     , sharedState(sharedState)
+    , cacheInhabitance(cacheInhabitance)
 {
 }
 
@@ -1305,7 +1427,8 @@ bool Normalizer::withinResourceLimits()
     // If cache is too large, clear it
     if (FInt::LuauNormalizeCacheLimit > 0)
     {
-        size_t cacheUsage = cachedNormals.size() + cachedIntersections.size() + cachedUnions.size() + cachedTypeIds.size();
+        size_t cacheUsage = cachedNormals.size() + cachedIntersections.size() + cachedUnions.size() + cachedTypeIds.size() +
+                            cachedIsInhabited.size() + cachedIsInhabitedIntersection.size();
         if (cacheUsage > size_t(FInt::LuauNormalizeCacheLimit))
         {
             clearCaches();
@@ -1366,7 +1489,7 @@ bool Normalizer::unionNormalWithTy(NormalizedType& here, TypeId there, int ignor
     else if (FFlag::LuauTransitiveSubtyping && get<UnknownType>(here.tops))
         return true;
     else if (get<GenericType>(there) || get<FreeType>(there) || (FFlag::LuauNormalizeBlockedTypes && get<BlockedType>(there)) ||
-             get<PendingExpansionType>(there))
+             get<PendingExpansionType>(there) || get<TypeFamilyInstanceType>(there))
     {
         if (tyvarIndex(there) <= ignoreSmallerTyvars)
             return true;
@@ -1436,7 +1559,7 @@ bool Normalizer::unionNormalWithTy(NormalizedType& here, TypeId there, int ignor
     }
     else if (!FFlag::LuauNormalizeBlockedTypes && get<BlockedType>(there))
         LUAU_ASSERT(!"Internal error: Trying to normalize a BlockedType");
-    else if (get<PendingExpansionType>(there))
+    else if (get<PendingExpansionType>(there) || get<TypeFamilyInstanceType>(there))
     {
         // nothing
     }
@@ -1981,50 +2104,37 @@ std::optional<TypeId> Normalizer::intersectionOfTables(TypeId here, TypeId there
     else if (isPrim(there, PrimitiveType::Table))
         return here;
 
-    if (FFlag::LuauNormalizeMetatableFixes)
-    {
-        if (get<NeverType>(here))
-            return there;
-        else if (get<NeverType>(there))
-            return here;
-        else if (get<AnyType>(here))
-            return there;
-        else if (get<AnyType>(there))
-            return here;
-    }
+    if (get<NeverType>(here))
+        return there;
+    else if (get<NeverType>(there))
+        return here;
+    else if (get<AnyType>(here))
+        return there;
+    else if (get<AnyType>(there))
+        return here;
 
     TypeId htable = here;
     TypeId hmtable = nullptr;
     if (const MetatableType* hmtv = get<MetatableType>(here))
     {
-        htable = hmtv->table;
-        hmtable = hmtv->metatable;
+        htable = follow(hmtv->table);
+        hmtable = follow(hmtv->metatable);
     }
     TypeId ttable = there;
     TypeId tmtable = nullptr;
     if (const MetatableType* tmtv = get<MetatableType>(there))
     {
-        ttable = tmtv->table;
-        tmtable = tmtv->metatable;
+        ttable = follow(tmtv->table);
+        tmtable = follow(tmtv->metatable);
     }
 
     const TableType* httv = get<TableType>(htable);
-    if (FFlag::LuauNormalizeMetatableFixes)
-    {
-        if (!httv)
-            return std::nullopt;
-    }
-    else
-        LUAU_ASSERT(httv);
+    if (!httv)
+        return std::nullopt;
 
     const TableType* tttv = get<TableType>(ttable);
-    if (FFlag::LuauNormalizeMetatableFixes)
-    {
-        if (!tttv)
-            return std::nullopt;
-    }
-    else
-        LUAU_ASSERT(tttv);
+    if (!tttv)
+        return std::nullopt;
 
 
     if (httv->state == TableState::Free || tttv->state == TableState::Free)
@@ -2471,7 +2581,7 @@ bool Normalizer::intersectNormalWithTy(NormalizedType& here, TypeId there)
         return true;
     }
     else if (get<GenericType>(there) || get<FreeType>(there) || (FFlag::LuauNormalizeBlockedTypes && get<BlockedType>(there)) ||
-             get<PendingExpansionType>(there))
+             get<PendingExpansionType>(there) || get<TypeFamilyInstanceType>(there))
     {
         NormalizedType thereNorm{builtinTypes};
         NormalizedType topNorm{builtinTypes};
@@ -2729,7 +2839,7 @@ bool isSubtype(TypeId subTy, TypeId superTy, NotNull<Scope> scope, NotNull<Built
     UnifierSharedState sharedState{&ice};
     TypeArena arena;
     Normalizer normalizer{&arena, builtinTypes, NotNull{&sharedState}};
-    Unifier u{NotNull{&normalizer}, Mode::Strict, scope, Location{}, Covariant};
+    Unifier u{NotNull{&normalizer}, scope, Location{}, Covariant};
 
     u.tryUnify(subTy, superTy);
     return !u.failure;
@@ -2742,7 +2852,7 @@ bool isSubtype(TypePackId subPack, TypePackId superPack, NotNull<Scope> scope, N
     UnifierSharedState sharedState{&ice};
     TypeArena arena;
     Normalizer normalizer{&arena, builtinTypes, NotNull{&sharedState}};
-    Unifier u{NotNull{&normalizer}, Mode::Strict, scope, Location{}, Covariant};
+    Unifier u{NotNull{&normalizer}, scope, Location{}, Covariant};
 
     u.tryUnify(subPack, superPack);
     return !u.failure;
@@ -2753,7 +2863,7 @@ bool isConsistentSubtype(TypeId subTy, TypeId superTy, NotNull<Scope> scope, Not
     UnifierSharedState sharedState{&ice};
     TypeArena arena;
     Normalizer normalizer{&arena, builtinTypes, NotNull{&sharedState}};
-    Unifier u{NotNull{&normalizer}, Mode::Strict, scope, Location{}, Covariant};
+    Unifier u{NotNull{&normalizer}, scope, Location{}, Covariant};
 
     u.tryUnify(subTy, superTy);
     const bool ok = u.errors.empty() && u.log.empty();
@@ -2766,7 +2876,7 @@ bool isConsistentSubtype(
     UnifierSharedState sharedState{&ice};
     TypeArena arena;
     Normalizer normalizer{&arena, builtinTypes, NotNull{&sharedState}};
-    Unifier u{NotNull{&normalizer}, Mode::Strict, scope, Location{}, Covariant};
+    Unifier u{NotNull{&normalizer}, scope, Location{}, Covariant};
 
     u.tryUnify(subPack, superPack);
     const bool ok = u.errors.empty() && u.log.empty();

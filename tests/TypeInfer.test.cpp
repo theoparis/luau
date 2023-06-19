@@ -267,10 +267,7 @@ TEST_CASE_FIXTURE(Fixture, "should_be_able_to_infer_this_without_stack_overflowi
         end
     )");
 
-    if (FFlag::DebugLuauDeferredConstraintResolution)
-        LUAU_REQUIRE_ERROR_COUNT(1, result);
-    else
-        LUAU_REQUIRE_NO_ERRORS(result);
+    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "exponential_blowup_from_copying_types")
@@ -992,10 +989,6 @@ TEST_CASE_FIXTURE(Fixture, "cli_50041_committing_txnlog_in_apollo_client_error")
 
         function Policies:readField(options: ReadFieldOptions)
             local _ = self:getStoreFieldName(options)
-            --[[
-                Type error:
-                TypeError { "MainModule", Location { { line = 25, col = 16 }, { line = 25, col = 20 } }, TypeMismatch { Policies, {- getStoreFieldName: (tp1) -> (a, b...) -} } }
-            ]]
             foo(self)
         end
     )");
@@ -1009,9 +1002,9 @@ TEST_CASE_FIXTURE(Fixture, "cli_50041_committing_txnlog_in_apollo_client_error")
         LUAU_REQUIRE_ERROR_COUNT(1, result);
 
         CHECK_EQ(
-            R"(Type 't1 where t1 = {+ getStoreFieldName: (t1, {| fieldName: string |} & {| from: number? |}) -> (a, b...) +}' could not be converted into 'Policies'
+            R"(Type 'Policies' from 'MainModule' could not be converted into 'Policies' from 'MainModule'
 caused by:
-  Property 'getStoreFieldName' is not compatible. Type 't1 where t1 = ({+ getStoreFieldName: t1 +}, {| fieldName: string |} & {| from: number? |}) -> (a, b...)' could not be converted into '(Policies, FieldSpecifier) -> string'
+  Property 'getStoreFieldName' is not compatible. Type '(Policies, FieldSpecifier & {| from: number? |}) -> (a, b...)' could not be converted into '(Policies, FieldSpecifier) -> string'
 caused by:
   Argument #2 type is not compatible. Type 'FieldSpecifier' could not be converted into 'FieldSpecifier & {| from: number? |}'
 caused by:
@@ -1231,6 +1224,71 @@ TEST_CASE_FIXTURE(Fixture, "dcr_delays_expansion_of_function_containing_blocked_
             end
         end
     )");
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "recursive_function_that_invokes_itself_with_a_refinement_of_its_parameter")
+{
+    CheckResult result = check(R"(
+        local TRUE: true = true
+
+        local function matches(value, t: true)
+            if value then
+                return true
+            end
+        end
+
+        local function readValue(breakpoint)
+            if matches(breakpoint, TRUE) then
+                readValue(breakpoint)
+            end
+        end
+    )");
+
+    CHECK("<a>(a) -> ()" == toString(requireType("readValue")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "recursive_function_that_invokes_itself_with_a_refinement_of_its_parameter_2")
+{
+    CheckResult result = check(R"(
+        local function readValue(breakpoint)
+            if type(breakpoint) == 'number' then
+                readValue(breakpoint)
+            end
+        end
+    )");
+
+    CHECK("(number) -> ()" == toString(requireType("readValue")));
+}
+
+/*
+ * We got into a case where, as we unified two nearly identical unions with one
+ * another, where we had a concatenated TxnLog that created a cycle between two
+ * free types.
+ *
+ * This code used to crash the type checker.  See CLI-71190
+ */
+TEST_CASE_FIXTURE(BuiltinsFixture, "convoluted_case_where_two_TypeVars_were_bound_to_each_other")
+{
+    check(R"(
+        type React_Ref<ElementType> = { current: ElementType } | ((ElementType) -> ())
+
+        type React_AbstractComponent<Config, Instance> = {
+            render: ((ref: React_Ref<Instance>) -> nil)
+        }
+
+        local createElement : <P, T>(React_AbstractComponent<P, T>) -> ()
+
+        function ScrollView:render()
+            local one = table.unpack(
+                if true then a else b
+            )
+
+            createElement(one)
+            createElement(one)
+        end
+    )");
+
+    // If this code does not crash, we are in good shape.
 }
 
 TEST_SUITE_END();

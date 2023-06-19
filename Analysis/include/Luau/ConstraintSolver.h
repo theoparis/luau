@@ -8,7 +8,6 @@
 #include "Luau/Normalize.h"
 #include "Luau/ToString.h"
 #include "Luau/Type.h"
-#include "Luau/TypeReduction.h"
 #include "Luau/Variant.h"
 
 #include <vector>
@@ -121,6 +120,9 @@ struct ConstraintSolver
     bool tryDispatch(const SetIndexerConstraint& c, NotNull<const Constraint> constraint, bool force);
     bool tryDispatch(const SingletonOrTopTypeConstraint& c, NotNull<const Constraint> constraint);
     bool tryDispatch(const UnpackConstraint& c, NotNull<const Constraint> constraint);
+    bool tryDispatch(const RefineConstraint& c, NotNull<const Constraint> constraint, bool force);
+    bool tryDispatch(const ReduceConstraint& c, NotNull<const Constraint> constraint, bool force);
+    bool tryDispatch(const ReducePackConstraint& c, NotNull<const Constraint> constraint, bool force);
 
     // for a, ... in some_table do
     // also handles __iter metamethod
@@ -130,8 +132,10 @@ struct ConstraintSolver
     bool tryDispatchIterableFunction(
         TypeId nextTy, TypeId tableTy, TypeId firstIndexTy, const IterableConstraint& c, NotNull<const Constraint> constraint, bool force);
 
-    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(TypeId subjectType, const std::string& propName);
-    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(TypeId subjectType, const std::string& propName, std::unordered_set<TypeId>& seen);
+    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
+        TypeId subjectType, const std::string& propName, bool suppressSimplification = false);
+    std::pair<std::vector<TypeId>, std::optional<TypeId>> lookupTableProp(
+        TypeId subjectType, const std::string& propName, bool suppressSimplification, std::unordered_set<TypeId>& seen);
 
     void block(NotNull<const Constraint> target, NotNull<const Constraint> constraint);
     /**
@@ -141,6 +145,16 @@ struct ConstraintSolver
     bool block(TypeId target, NotNull<const Constraint> constraint);
     bool block(TypePackId target, NotNull<const Constraint> constraint);
 
+    // Block on every target
+    template<typename T>
+    bool block(const T& targets, NotNull<const Constraint> constraint)
+    {
+        for (TypeId target : targets)
+            block(target, constraint);
+
+        return false;
+    }
+
     /**
      * For all constraints that are blocked on one constraint, make them block
      * on a new constraint.
@@ -149,21 +163,21 @@ struct ConstraintSolver
      */
     void inheritBlocks(NotNull<const Constraint> source, NotNull<const Constraint> addition);
 
-    // Traverse the type.  If any blocked or pending types are found, block
-    // the constraint on them.
+    // Traverse the type.  If any pending types are found, block the constraint
+    // on them.
     //
     // Returns false if a type blocks the constraint.
     //
     // FIXME: This use of a boolean for the return result is an appalling
     // interface.
-    bool recursiveBlock(TypeId target, NotNull<const Constraint> constraint);
-    bool recursiveBlock(TypePackId target, NotNull<const Constraint> constraint);
+    bool blockOnPendingTypes(TypeId target, NotNull<const Constraint> constraint);
+    bool blockOnPendingTypes(TypePackId target, NotNull<const Constraint> constraint);
 
     void unblock(NotNull<const Constraint> progressed);
-    void unblock(TypeId progressed);
-    void unblock(TypePackId progressed);
-    void unblock(const std::vector<TypeId>& types);
-    void unblock(const std::vector<TypePackId>& packs);
+    void unblock(TypeId progressed, Location location);
+    void unblock(TypePackId progressed, Location location);
+    void unblock(const std::vector<TypeId>& types, Location location);
+    void unblock(const std::vector<TypePackId>& packs, Location location);
 
     /**
      * @returns true if the TypeId is in a blocked state.
@@ -187,7 +201,7 @@ struct ConstraintSolver
      * @param subType the sub-type to unify.
      * @param superType the super-type to unify.
      */
-    void unify(TypeId subType, TypeId superType, NotNull<Scope> scope);
+    ErrorVec unify(TypeId subType, TypeId superType, NotNull<Scope> scope);
 
     /**
      * Creates a new Unifier and performs a single unification operation. Commits
@@ -195,7 +209,7 @@ struct ConstraintSolver
      * @param subPack the sub-type pack to unify.
      * @param superPack the super-type pack to unify.
      */
-    void unify(TypePackId subPack, TypePackId superPack, NotNull<Scope> scope);
+    ErrorVec unify(TypePackId subPack, TypePackId superPack, NotNull<Scope> scope);
 
     /** Pushes a new solver constraint to the solver.
      * @param cv the body of the constraint.
@@ -252,6 +266,8 @@ private:
     TypePackId errorRecoveryTypePack() const;
 
     TypeId unionOfTypes(TypeId a, TypeId b, NotNull<Scope> scope, bool unifyFreeTypes);
+
+    TypePackId anyifyModuleReturnTypePackGenerics(TypePackId tp);
 
     ToStringOptions opts;
 };

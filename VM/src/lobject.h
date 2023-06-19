@@ -275,9 +275,9 @@ typedef struct Proto
     TString* debugname;
     uint8_t* debuginsn; // a copy of code[] array with just opcodes
 
-#if LUA_CUSTOM_EXECUTION
+    const Instruction* codeentry;
     void* execdata;
-#endif
+    uintptr_t exectarget;
 
     GCObject* gclist;
 

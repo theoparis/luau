@@ -300,8 +300,9 @@ enum LuauOpcode
     // A: target register (see FORGLOOP for register layout)
     LOP_FORGPREP_NEXT,
 
-    // removed in v3
-    LOP_DEP_FORGLOOP_NEXT,
+    // NATIVECALL: start executing new function in native code
+    // this is a pseudo-instruction that is never emitted by bytecode compiler, but can be constructed at runtime to accelerate native code dispatch
+    LOP_NATIVECALL,
 
     // GETVARARGS: copy variables into the target register from vararg storage for current function
     // A: target register
@@ -412,8 +413,10 @@ enum LuauBytecodeTag
 {
     // Bytecode version; runtime supports [MIN, MAX], compiler emits TARGET by default but may emit a higher version when flags are enabled
     LBC_VERSION_MIN = 3,
-    LBC_VERSION_MAX = 3,
+    LBC_VERSION_MAX = 4,
     LBC_VERSION_TARGET = 3,
+    // Type encoding version
+    LBC_TYPE_VERSION = 1,
     // Types of constant table entries
     LBC_CONSTANT_NIL = 0,
     LBC_CONSTANT_BOOLEAN,
@@ -422,6 +425,25 @@ enum LuauBytecodeTag
     LBC_CONSTANT_IMPORT,
     LBC_CONSTANT_TABLE,
     LBC_CONSTANT_CLOSURE,
+};
+
+// Type table tags
+enum LuauBytecodeEncodedType
+{
+    LBC_TYPE_NIL = 0,
+    LBC_TYPE_BOOLEAN,
+    LBC_TYPE_NUMBER,
+    LBC_TYPE_STRING,
+    LBC_TYPE_TABLE,
+    LBC_TYPE_FUNCTION,
+    LBC_TYPE_THREAD,
+    LBC_TYPE_USERDATA,
+    LBC_TYPE_VECTOR,
+
+    LBC_TYPE_ANY = 15,
+    LBC_TYPE_OPTIONAL_BIT = 1 << 7,
+
+    LBC_TYPE_INVALID = 256,
 };
 
 // Builtin function ids, used in LOP_FASTCALL

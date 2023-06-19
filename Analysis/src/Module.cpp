@@ -10,7 +10,6 @@
 #include "Luau/Type.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/TypePack.h"
-#include "Luau/TypeReduction.h"
 #include "Luau/VisitType.h"
 
 #include <algorithm>
@@ -20,7 +19,7 @@ LUAU_FASTFLAGVARIABLE(LuauClonePublicInterfaceLess2, false);
 LUAU_FASTFLAG(LuauSubstitutionReentrant);
 LUAU_FASTFLAG(LuauClassTypeVarsInSubstitution);
 LUAU_FASTFLAG(LuauSubstitutionFixMissingFields);
-LUAU_FASTFLAGVARIABLE(LuauCopyExportedTypes, false);
+LUAU_FASTFLAGVARIABLE(LuauCloneSkipNonInternalVisit, false);
 
 namespace Luau
 {
@@ -98,6 +97,22 @@ struct ClonePublicInterface : Substitution
     bool isDirty(TypePackId tp) override
     {
         return tp->owningArena == &module->internalTypes;
+    }
+
+    bool ignoreChildrenVisit(TypeId ty) override
+    {
+        if (FFlag::LuauCloneSkipNonInternalVisit && ty->owningArena != &module->internalTypes)
+            return true;
+
+        return false;
+    }
+
+    bool ignoreChildrenVisit(TypePackId tp) override
+    {
+        if (FFlag::LuauCloneSkipNonInternalVisit && tp->owningArena != &module->internalTypes)
+            return true;
+
+        return false;
     }
 
     TypeId clean(TypeId ty) override
@@ -238,10 +253,7 @@ void Module::clonePublicInterface(NotNull<BuiltinTypes> builtinTypes, InternalEr
 
     // Copy external stuff over to Module itself
     this->returnType = moduleScope->returnType;
-    if (FFlag::DebugLuauDeferredConstraintResolution || FFlag::LuauCopyExportedTypes)
-        this->exportedTypeBindings = moduleScope->exportedTypeBindings;
-    else
-        this->exportedTypeBindings = std::move(moduleScope->exportedTypeBindings);
+    this->exportedTypeBindings = moduleScope->exportedTypeBindings;
 }
 
 bool Module::hasModuleScope() const

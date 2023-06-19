@@ -423,12 +423,13 @@ static int getnextline(Proto* p, int line)
             if (LUAU_INSN_OP(p->code[i]) == LOP_PREPVARARGS)
                 continue;
 
-            int current = luaG_getline(p, i);
-            if (current >= line)
-            {
-                closest = current;
-                break;
-            }
+            int candidate = luaG_getline(p, i);
+
+            if (candidate == line)
+                return line;
+
+            if (candidate > line && (closest == -1 || candidate < closest))
+                closest = candidate;
         }
     }
 
@@ -436,10 +437,12 @@ static int getnextline(Proto* p, int line)
     {
         // Find the closest line number to the intended one.
         int candidate = getnextline(p->p[i], line);
-        if (closest == -1 || (candidate >= line && candidate < closest))
-        {
+
+        if (candidate == line)
+            return line;
+
+        if (candidate > line && (closest == -1 || candidate < closest))
             closest = candidate;
-        }
     }
 
     return closest;
