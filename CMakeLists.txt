@@ -97,12 +97,12 @@ install(
     EXPORT LuauTargets
 )
 install(
-    DIRECTORY "${CMAKE_SOURCE_DIR}/VM/include/"
-    DIRECTORY "${CMAKE_SOURCE_DIR}/CodeGen/include/"
-    DIRECTORY "${CMAKE_SOURCE_DIR}/Ast/include/"
-    DIRECTORY "${CMAKE_SOURCE_DIR}/Compiler/include/"
-    DIRECTORY "${CMAKE_SOURCE_DIR}/Analysis/include/"
-    DIRECTORY "${CMAKE_SOURCE_DIR}/Common/include/"
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/VM/include/"
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/CodeGen/include/"
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Ast/include/"
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Compiler/include/"
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Analysis/include/"
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Common/include/"
     DESTINATION "include"
     FILES_MATCHING
     PATTERN "*.h"
