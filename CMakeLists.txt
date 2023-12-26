@@ -109,6 +109,7 @@ install(
     DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Compiler/include/"
     DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Analysis/include/"
     DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Common/include/"
+    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Config/include/"
     DESTINATION "include"
     FILES_MATCHING
     PATTERN "*.h"
