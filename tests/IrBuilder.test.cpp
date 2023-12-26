@@ -5,12 +5,15 @@
 #include "Luau/IrUtils.h"
 #include "Luau/OptimizeConstProp.h"
 #include "Luau/OptimizeFinalX64.h"
+#include "ScopedFlags.h"
 
 #include "doctest.h"
 
 #include <limits.h>
 
 using namespace Luau::CodeGen;
+
+LUAU_FASTFLAG(LuauReuseBufferChecks);
 
 class IrBuilderFixture
 {
@@ -526,7 +529,7 @@ bb_0:
 )");
 }
 
-TEST_CASE_FIXTURE(IrBuilderFixture, "Bit32Blocked")
+TEST_CASE_FIXTURE(IrBuilderFixture, "Bit32RangeReduction")
 {
     IrOp block = build.block(IrBlockKind::Internal);
 
@@ -534,10 +537,10 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "Bit32Blocked")
 
     build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITLSHIFT_UINT, build.constInt(0xf), build.constInt(-10)));
     build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITLSHIFT_UINT, build.constInt(0xf), build.constInt(140)));
-    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITRSHIFT_UINT, build.constInt(0xf), build.constInt(-10)));
-    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITRSHIFT_UINT, build.constInt(0xf), build.constInt(140)));
-    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITARSHIFT_UINT, build.constInt(0xf), build.constInt(-10)));
-    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITARSHIFT_UINT, build.constInt(0xf), build.constInt(140)));
+    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITRSHIFT_UINT, build.constInt(0xffffff), build.constInt(-10)));
+    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITRSHIFT_UINT, build.constInt(0xffffff), build.constInt(140)));
+    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITARSHIFT_UINT, build.constInt(0xffffff), build.constInt(-10)));
+    build.inst(IrCmd::STORE_INT, build.vmReg(10), build.inst(IrCmd::BITARSHIFT_UINT, build.constInt(0xffffff), build.constInt(140)));
 
     build.inst(IrCmd::RETURN, build.constUint(0));
 
@@ -546,18 +549,12 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "Bit32Blocked")
 
     CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
 bb_0:
-   %0 = BITLSHIFT_UINT 15i, -10i
-   STORE_INT R10, %0
-   %2 = BITLSHIFT_UINT 15i, 140i
-   STORE_INT R10, %2
-   %4 = BITRSHIFT_UINT 15i, -10i
-   STORE_INT R10, %4
-   %6 = BITRSHIFT_UINT 15i, 140i
-   STORE_INT R10, %6
-   %8 = BITARSHIFT_UINT 15i, -10i
-   STORE_INT R10, %8
-   %10 = BITARSHIFT_UINT 15i, 140i
-   STORE_INT R10, %10
+   STORE_INT R10, 62914560i
+   STORE_INT R10, 61440i
+   STORE_INT R10, 3i
+   STORE_INT R10, 4095i
+   STORE_INT R10, 3i
+   STORE_INT R10, 4095i
    RETURN 0u
 
 )");
@@ -626,11 +623,11 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "ControlFlowEq")
     });
 
     withTwoBlocks([this](IrOp a, IrOp b) {
-        build.inst(IrCmd::JUMP_EQ_INT, build.constInt(0), build.constInt(0), a, b);
+        build.inst(IrCmd::JUMP_CMP_INT, build.constInt(0), build.constInt(0), build.cond(IrCondition::Equal), a, b);
     });
 
     withTwoBlocks([this](IrOp a, IrOp b) {
-        build.inst(IrCmd::JUMP_EQ_INT, build.constInt(0), build.constInt(1), a, b);
+        build.inst(IrCmd::JUMP_CMP_INT, build.constInt(0), build.constInt(1), build.cond(IrCondition::Equal), a, b);
     });
 
     updateUseCounts(build.function);
@@ -889,8 +886,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "PropagateThroughTvalue")
 bb_0:
    STORE_TAG R0, tnumber
    STORE_DOUBLE R0, 0.5
-   %2 = LOAD_TVALUE R0
-   STORE_TVALUE R1, %2
+   STORE_SPLIT_TVALUE R1, tnumber, 0.5
    STORE_TAG R3, tnumber
    STORE_DOUBLE R3, 0.5
    RETURN 0u
@@ -997,6 +993,52 @@ bb_fallback_1:
 )");
 }
 
+TEST_CASE_FIXTURE(IrBuilderFixture, "RememberNewTableState")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    IrOp newtable = build.inst(IrCmd::NEW_TABLE, build.constUint(16), build.constUint(32));
+    build.inst(IrCmd::STORE_POINTER, build.vmReg(0), newtable);
+
+    IrOp table = build.inst(IrCmd::LOAD_POINTER, build.vmReg(0));
+
+    build.inst(IrCmd::CHECK_NO_METATABLE, table, fallback);
+    build.inst(IrCmd::CHECK_READONLY, table, fallback);
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table, build.constInt(14), fallback);
+
+    build.inst(IrCmd::SET_TABLE, build.vmReg(1), build.vmReg(0), build.constUint(13)); // Invalidate table knowledge
+
+    build.inst(IrCmd::CHECK_NO_METATABLE, table, fallback);
+    build.inst(IrCmd::CHECK_READONLY, table, fallback);
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table, build.constInt(14), fallback);
+
+    build.inst(IrCmd::RETURN, build.constUint(0));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = NEW_TABLE 16u, 32u
+   STORE_POINTER R0, %0
+   SET_TABLE R1, R0, 13u
+   CHECK_NO_METATABLE %0, bb_fallback_1
+   CHECK_READONLY %0, bb_fallback_1
+   CHECK_ARRAY_SIZE %0, 14i, bb_fallback_1
+   RETURN 0u
+
+bb_fallback_1:
+   RETURN 1u
+
+)");
+}
+
 TEST_CASE_FIXTURE(IrBuilderFixture, "SkipUselessBarriers")
 {
     IrOp block = build.block(IrBlockKind::Internal);
@@ -1005,9 +1047,9 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "SkipUselessBarriers")
 
     build.inst(IrCmd::STORE_TAG, build.vmReg(0), build.constTag(tnumber));
     IrOp table = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
-    build.inst(IrCmd::BARRIER_TABLE_FORWARD, table, build.vmReg(0));
+    build.inst(IrCmd::BARRIER_TABLE_FORWARD, table, build.vmReg(0), build.undef());
     IrOp something = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
-    build.inst(IrCmd::BARRIER_OBJ, something, build.vmReg(0));
+    build.inst(IrCmd::BARRIER_OBJ, something, build.vmReg(0), build.undef());
     build.inst(IrCmd::RETURN, build.constUint(0));
 
     updateUseCounts(build.function);
@@ -1319,7 +1361,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "IntEqRemoval")
     build.beginBlock(block);
     build.inst(IrCmd::STORE_INT, build.vmReg(1), build.constInt(5));
     IrOp value = build.inst(IrCmd::LOAD_INT, build.vmReg(1));
-    build.inst(IrCmd::JUMP_EQ_INT, value, build.constInt(5), trueBlock, falseBlock);
+    build.inst(IrCmd::JUMP_CMP_INT, value, build.constInt(5), build.cond(IrCondition::Equal), trueBlock, falseBlock);
 
     build.beginBlock(trueBlock);
     build.inst(IrCmd::RETURN, build.constUint(1));
@@ -1516,7 +1558,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "RecursiveSccUseRemoval2")
     IrOp repeat = build.block(IrBlockKind::Internal);
 
     build.beginBlock(entry);
-    build.inst(IrCmd::JUMP_EQ_INT, build.constInt(0), build.constInt(1), block, exit1);
+    build.inst(IrCmd::JUMP_CMP_INT, build.constInt(0), build.constInt(1), build.cond(IrCondition::Equal), block, exit1);
 
     build.beginBlock(exit1);
     build.inst(IrCmd::RETURN, build.vmReg(0), build.constInt(0));
@@ -1592,7 +1634,7 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "InvalidateReglinkVersion")
     build.inst(IrCmd::STORE_TAG, build.vmReg(2), build.constTag(tstring));
     IrOp tv2 = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(2));
     build.inst(IrCmd::STORE_TVALUE, build.vmReg(1), tv2);
-    IrOp ft = build.inst(IrCmd::NEW_TABLE);
+    IrOp ft = build.inst(IrCmd::NEW_TABLE, build.constUint(0), build.constUint(0));
     build.inst(IrCmd::STORE_POINTER, build.vmReg(2), ft);
     build.inst(IrCmd::STORE_TAG, build.vmReg(2), build.constTag(ttable));
     IrOp tv1 = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(1));
@@ -1612,7 +1654,7 @@ bb_0:
    STORE_TAG R2, tstring
    %1 = LOAD_TVALUE R2
    STORE_TVALUE R1, %1
-   %3 = NEW_TABLE
+   %3 = NEW_TABLE 0u, 0u
    STORE_POINTER R2, %3
    STORE_TAG R2, ttable
    STORE_TVALUE R0, %1
@@ -1817,8 +1859,8 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "PartialStoreInvalidation")
     build.inst(IrCmd::STORE_TVALUE, build.vmReg(1), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0)));
     build.inst(IrCmd::STORE_DOUBLE, build.vmReg(0), build.constDouble(0.5));
     build.inst(IrCmd::STORE_TVALUE, build.vmReg(1), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0))); // Should be reloaded
-    build.inst(IrCmd::STORE_TAG, build.vmReg(0), build.constTag(tboolean));
-    build.inst(IrCmd::STORE_TVALUE, build.vmReg(1), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0))); // Should be reloaded
+    build.inst(IrCmd::STORE_TAG, build.vmReg(0), build.constTag(tnumber));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(1), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0)));
 
     build.inst(IrCmd::RETURN, build.constUint(0));
 
@@ -1832,9 +1874,8 @@ bb_0:
    STORE_DOUBLE R0, 0.5
    %3 = LOAD_TVALUE R0
    STORE_TVALUE R1, %3
-   STORE_TAG R0, tboolean
-   %6 = LOAD_TVALUE R0
-   STORE_TVALUE R1, %6
+   STORE_TAG R0, tnumber
+   STORE_SPLIT_TVALUE R1, tnumber, 0.5
    RETURN 0u
 
 )");
@@ -1860,6 +1901,541 @@ bb_0:
    FALLBACK_GETVARARGS 0u, R1, -1i
    STORE_TAG R2, tnumber
    RETURN 0u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "LoadPropagatesOnlyRightType")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+
+    build.beginBlock(block);
+
+    build.inst(IrCmd::STORE_INT, build.vmReg(0), build.constInt(2));
+    IrOp value1 = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(0));
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(1), value1);
+    IrOp value2 = build.inst(IrCmd::LOAD_INT, build.vmReg(1));
+    build.inst(IrCmd::STORE_INT, build.vmReg(2), value2);
+    build.inst(IrCmd::RETURN, build.constUint(0));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   STORE_INT R0, 2i
+   %1 = LOAD_DOUBLE R0
+   STORE_DOUBLE R1, %1
+   %3 = LOAD_INT R1
+   STORE_INT R2, %3
+   RETURN 0u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateHashSlotChecks")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    // This roughly corresponds to 'return t.a + t.a'
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    IrOp slot1 = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table1, build.constUint(3), build.vmConst(1));
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot1, build.vmConst(1), fallback);
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, slot1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    IrOp slot1b = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table1, build.constUint(8), build.vmConst(1)); // This will be removed
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot1b, build.vmConst(1), fallback);                           // Key will be replaced with undef here
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, slot1b, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(4), value1b);
+
+    IrOp a = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(3));
+    IrOp b = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(4));
+    IrOp sum = build.inst(IrCmd::ADD_NUM, a, b);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(2), sum);
+
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    // In the future, we might even see duplicate identical TValue loads go away
+    // In the future, we might even see loads of different VM regs with the same value go away
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   %1 = GET_SLOT_NODE_ADDR %0, 3u, K1
+   CHECK_SLOT_MATCH %1, K1, bb_fallback_1
+   %3 = LOAD_TVALUE %1, 0i
+   STORE_TVALUE R3, %3
+   CHECK_NODE_VALUE %1, bb_fallback_1
+   %7 = LOAD_TVALUE %1, 0i
+   STORE_TVALUE R4, %7
+   %9 = LOAD_DOUBLE R3
+   %10 = LOAD_DOUBLE R4
+   %11 = ADD_NUM %9, %10
+   STORE_DOUBLE R2, %11
+   RETURN R2, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateHashSlotChecksAvoidNil")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    IrOp slot1 = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table1, build.constUint(3), build.vmConst(1));
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot1, build.vmConst(1), fallback);
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, slot1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    IrOp table2 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    IrOp slot2 = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table2, build.constUint(6), build.vmConst(1));
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot2, build.vmConst(1), fallback);
+    build.inst(IrCmd::CHECK_READONLY, table2, fallback);
+
+    build.inst(IrCmd::STORE_TAG, build.vmReg(4), build.constTag(tnil));
+    IrOp valueNil = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(4));
+    build.inst(IrCmd::STORE_TVALUE, slot2, valueNil, build.constInt(0));
+
+    // In the future, we might get to track that value became 'nil' and that fallback will be taken
+    IrOp slot1b = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table1, build.constUint(8), build.vmConst(1)); // This will be removed
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot1b, build.vmConst(1), fallback);                           // Key will be replaced with undef here
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, slot1b, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1b);
+
+    IrOp slot2b = build.inst(IrCmd::GET_SLOT_NODE_ADDR, table2, build.constUint(11), build.vmConst(1)); // This will be removed
+    build.inst(IrCmd::CHECK_SLOT_MATCH, slot2b, build.vmConst(1), fallback);                            // Key will be replaced with undef here
+    build.inst(IrCmd::CHECK_READONLY, table2, fallback);
+
+    build.inst(IrCmd::STORE_SPLIT_TVALUE, slot2b, build.constTag(tnumber), build.constDouble(1), build.constInt(0));
+
+    build.inst(IrCmd::RETURN, build.vmReg(3), build.constUint(2));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(1), build.constUint(2));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   %1 = GET_SLOT_NODE_ADDR %0, 3u, K1
+   CHECK_SLOT_MATCH %1, K1, bb_fallback_1
+   %3 = LOAD_TVALUE %1, 0i
+   STORE_TVALUE R3, %3
+   %5 = LOAD_POINTER R2
+   %6 = GET_SLOT_NODE_ADDR %5, 6u, K1
+   CHECK_SLOT_MATCH %6, K1, bb_fallback_1
+   CHECK_READONLY %5, bb_fallback_1
+   STORE_TAG R4, tnil
+   %10 = LOAD_TVALUE R4
+   STORE_TVALUE %6, %10, 0i
+   CHECK_NODE_VALUE %1, bb_fallback_1
+   %14 = LOAD_TVALUE %1, 0i
+   STORE_TVALUE R3, %14
+   CHECK_NODE_VALUE %6, bb_fallback_1
+   STORE_SPLIT_TVALUE %6, tnumber, 1, 0i
+   RETURN R3, 2u
+
+bb_fallback_1:
+   RETURN R1, 2u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksSameIndex")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    // This roughly corresponds to 'return t[1] + t[1]'
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(0), fallback);
+    IrOp elem1 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0));
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, elem1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(0), fallback); // This will be removed
+    IrOp elem2 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0));  // And this will be substituted
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, elem2, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(4), value1b);
+
+    IrOp a = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(3));
+    IrOp b = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(4));
+    IrOp sum = build.inst(IrCmd::ADD_NUM, a, b);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(2), sum);
+
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    // In the future, we might even see duplicate identical TValue loads go away
+    // In the future, we might even see loads of different VM regs with the same value go away
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   CHECK_ARRAY_SIZE %0, 0i, bb_fallback_1
+   %2 = GET_ARR_ADDR %0, 0i
+   %3 = LOAD_TVALUE %2, 0i
+   STORE_TVALUE R3, %3
+   %7 = LOAD_TVALUE %2, 0i
+   STORE_TVALUE R4, %7
+   %9 = LOAD_DOUBLE R3
+   %10 = LOAD_DOUBLE R4
+   %11 = ADD_NUM %9, %10
+   STORE_DOUBLE R2, %11
+   RETURN R2, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksSameValue")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    // This roughly corresponds to 'return t[i] + t[i]'
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    IrOp index = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(2));
+    IrOp validIndex = build.inst(IrCmd::TRY_NUM_TO_INDEX, index, fallback);
+    IrOp validOffset = build.inst(IrCmd::SUB_INT, validIndex, build.constInt(1));
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, validOffset, fallback);
+    IrOp elem1 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0));
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, elem1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    IrOp validIndex2 = build.inst(IrCmd::TRY_NUM_TO_INDEX, index, fallback);
+    IrOp validOffset2 = build.inst(IrCmd::SUB_INT, validIndex2, build.constInt(1));
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, validOffset2, fallback);     // This will be removed
+    IrOp elem2 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0)); // And this will be substituted
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, elem2, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(4), value1b);
+
+    IrOp a = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(3));
+    IrOp b = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(4));
+    IrOp sum = build.inst(IrCmd::ADD_NUM, a, b);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(2), sum);
+
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    // In the future, we might even see duplicate identical TValue loads go away
+    // In the future, we might even see loads of different VM regs with the same value go away
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   %1 = LOAD_DOUBLE R2
+   %2 = TRY_NUM_TO_INDEX %1, bb_fallback_1
+   %3 = SUB_INT %2, 1i
+   CHECK_ARRAY_SIZE %0, %3, bb_fallback_1
+   %5 = GET_ARR_ADDR %0, 0i
+   %6 = LOAD_TVALUE %5, 0i
+   STORE_TVALUE R3, %6
+   %12 = LOAD_TVALUE %5, 0i
+   STORE_TVALUE R4, %12
+   %14 = LOAD_DOUBLE R3
+   %15 = LOAD_DOUBLE R4
+   %16 = ADD_NUM %14, %15
+   STORE_DOUBLE R2, %16
+   RETURN R2, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksLowerIndex")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    // This roughly corresponds to 'return t[2] + t[1]'
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(1), fallback);
+    IrOp elem1 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(1));
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, elem1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(0), fallback); // This will be removed
+    IrOp elem2 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0));
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, elem2, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(4), value1b);
+
+    IrOp a = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(3));
+    IrOp b = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(4));
+    IrOp sum = build.inst(IrCmd::ADD_NUM, a, b);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(2), sum);
+
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   CHECK_ARRAY_SIZE %0, 1i, bb_fallback_1
+   %2 = GET_ARR_ADDR %0, 1i
+   %3 = LOAD_TVALUE %2, 0i
+   STORE_TVALUE R3, %3
+   %6 = GET_ARR_ADDR %0, 0i
+   %7 = LOAD_TVALUE %6, 0i
+   STORE_TVALUE R4, %7
+   %9 = LOAD_DOUBLE R3
+   %10 = LOAD_DOUBLE R4
+   %11 = ADD_NUM %9, %10
+   STORE_DOUBLE R2, %11
+   RETURN R2, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateArrayElemChecksInvalidations")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    // This roughly corresponds to 'return t[1] + t[1]' with a strange table.insert in the middle
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(0), fallback);
+    IrOp elem1 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0));
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, elem1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    build.inst(IrCmd::TABLE_SETNUM, table1, build.constInt(2));
+
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(0), fallback); // This will be removed
+    IrOp elem2 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0));  // And this will be substituted
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, elem2, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(4), value1b);
+
+    IrOp a = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(3));
+    IrOp b = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(4));
+    IrOp sum = build.inst(IrCmd::ADD_NUM, a, b);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(2), sum);
+
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   CHECK_ARRAY_SIZE %0, 0i, bb_fallback_1
+   %2 = GET_ARR_ADDR %0, 0i
+   %3 = LOAD_TVALUE %2, 0i
+   STORE_TVALUE R3, %3
+   %5 = TABLE_SETNUM %0, 2i
+   CHECK_ARRAY_SIZE %0, 0i, bb_fallback_1
+   %7 = GET_ARR_ADDR %0, 0i
+   %8 = LOAD_TVALUE %7, 0i
+   STORE_TVALUE R4, %8
+   %10 = LOAD_DOUBLE R3
+   %11 = LOAD_DOUBLE R4
+   %12 = ADD_NUM %10, %11
+   STORE_DOUBLE R2, %12
+   RETURN R2, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "ArrayElemChecksNegativeIndex")
+{
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    // This roughly corresponds to 'return t[1] + t[0]'
+    IrOp table1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(0), fallback);
+    IrOp elem1 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(0));
+    IrOp value1 = build.inst(IrCmd::LOAD_TVALUE, elem1, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), value1);
+
+    build.inst(IrCmd::CHECK_ARRAY_SIZE, table1, build.constInt(-1), fallback); // This will jump directly to fallback
+    IrOp elem2 = build.inst(IrCmd::GET_ARR_ADDR, table1, build.constInt(-1));
+    IrOp value1b = build.inst(IrCmd::LOAD_TVALUE, elem2, build.constInt(0));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(4), value1b);
+
+    IrOp a = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(3));
+    IrOp b = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(4));
+    IrOp sum = build.inst(IrCmd::ADD_NUM, a, b);
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(2), sum);
+
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R1
+   CHECK_ARRAY_SIZE %0, 0i, bb_fallback_1
+   %2 = GET_ARR_ADDR %0, 0i
+   %3 = LOAD_TVALUE %2, 0i
+   STORE_TVALUE R3, %3
+   JUMP bb_fallback_1
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "DuplicateBufferLengthChecks")
+{
+    ScopedFastFlag luauReuseBufferChecks{FFlag::LuauReuseBufferChecks, true};
+
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    IrOp sourceBuf = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0));
+
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer1, build.constInt(12), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer1, build.constInt(12), build.constInt(32));
+
+    // Now with lower index, should be removed
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer2 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer2, build.constInt(8), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer2, build.constInt(8), build.constInt(30));
+
+    // Now with higher index, should raise the initial check bound
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer3 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, build.constInt(16), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer3, build.constInt(16), build.constInt(60));
+
+    // Now with different access size, should not reuse previous checks (can be improved in the future)
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, build.constInt(16), build.constInt(2), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI16, buffer3, build.constInt(16), build.constInt(55));
+
+    // Now with same, but unknown index value
+    IrOp index = build.inst(IrCmd::LOAD_INT, build.vmReg(1));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, index, build.constInt(2), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI16, buffer3, index, build.constInt(1));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer3, index, build.constInt(2), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI16, buffer3, index, build.constInt(2));
+
+    build.inst(IrCmd::RETURN, build.vmReg(1), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_TVALUE R0
+   STORE_TVALUE R2, %0
+   %2 = LOAD_POINTER R2
+   CHECK_BUFFER_LEN %2, 16i, 4i, bb_fallback_1
+   BUFFER_WRITEI32 %2, 12i, 32i
+   BUFFER_WRITEI32 %2, 8i, 30i
+   BUFFER_WRITEI32 %2, 16i, 60i
+   CHECK_BUFFER_LEN %2, 16i, 2i, bb_fallback_1
+   BUFFER_WRITEI16 %2, 16i, 55i
+   %15 = LOAD_INT R1
+   CHECK_BUFFER_LEN %2, %15, 2i, bb_fallback_1
+   BUFFER_WRITEI16 %2, %15, 1i
+   BUFFER_WRITEI16 %2, %15, 2i
+   RETURN R1, 1u
+
+bb_fallback_1:
+   RETURN R0, 1u
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "BufferLenghtChecksNegativeIndex")
+{
+    ScopedFastFlag luauReuseBufferChecks{FFlag::LuauReuseBufferChecks, true};
+
+    IrOp block = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(block);
+
+    IrOp sourceBuf = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(0));
+
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), sourceBuf);
+    IrOp buffer1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(2));
+    build.inst(IrCmd::CHECK_BUFFER_LEN, buffer1, build.constInt(-4), build.constInt(4), fallback);
+    build.inst(IrCmd::BUFFER_WRITEI32, buffer1, build.constInt(-4), build.constInt(32));
+    build.inst(IrCmd::RETURN, build.vmReg(1), build.constUint(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constUint(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_TVALUE R0
+   STORE_TVALUE R2, %0
+   JUMP bb_fallback_1
+
+bb_fallback_1:
+   RETURN R0, 1u
 
 )");
 }
@@ -2217,6 +2793,32 @@ TEST_CASE_FIXTURE(IrBuilderFixture, "DominanceVerification3")
     CHECK(build.function.cfg.idoms == std::vector<uint32_t>{~0u, 0, 0, 0, 2, 0, 4, 0});
 }
 
+// 'Static Single Assignment Book' Figure 4.1
+TEST_CASE_FIXTURE(IrBuilderFixture, "DominanceVerification4")
+{
+    defineCfgTree({{1}, {2, 10}, {3, 7}, {4}, {5}, {4, 6}, {1}, {8}, {5, 9}, {7}, {}});
+
+    IdfContext ctx;
+
+    computeIteratedDominanceFrontierForDefs(ctx, build.function, {0, 2, 3, 6}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+    CHECK(ctx.idf == std::vector<uint32_t>{1, 4, 5});
+}
+
+// 'Static Single Assignment Book' Figure 4.5
+TEST_CASE_FIXTURE(IrBuilderFixture, "DominanceVerification4")
+{
+    defineCfgTree({{1}, {2}, {3, 7}, {4, 5}, {6}, {6}, {8}, {8}, {9}, {10, 11}, {11}, {9, 12}, {2}});
+
+    IdfContext ctx;
+
+    computeIteratedDominanceFrontierForDefs(ctx, build.function, {4, 5, 7, 12}, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
+    CHECK(ctx.idf == std::vector<uint32_t>{2, 6, 8});
+
+    // Pruned form, when variable is only live-in in limited set of blocks
+    computeIteratedDominanceFrontierForDefs(ctx, build.function, {4, 5, 7, 12}, {6, 8, 9});
+    CHECK(ctx.idf == std::vector<uint32_t>{6, 8});
+}
+
 TEST_SUITE_END();
 
 TEST_SUITE_BEGIN("ValueNumbering");
@@ -2460,6 +3062,172 @@ bb_0:
    RETURN R1, 1i
 
 )");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "TValueLoadToSplitStore")
+{
+    IrOp entry = build.block(IrBlockKind::Internal);
+    IrOp fallback = build.block(IrBlockKind::Fallback);
+
+    build.beginBlock(entry);
+    IrOp op1 = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(0));
+    IrOp op1v2 = build.inst(IrCmd::ADD_NUM, op1, build.constDouble(4.0));
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(1), op1v2);
+    build.inst(IrCmd::STORE_TAG, build.vmReg(1), build.constTag(tnumber));
+
+    // Check that this TValue store will be replaced by a split store
+    IrOp tv = build.inst(IrCmd::LOAD_TVALUE, build.vmReg(1));
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), tv);
+
+    // Check that tag and value can be extracted from R2 now (removing the fallback)
+    IrOp tag2 = build.inst(IrCmd::LOAD_TAG, build.vmReg(2));
+    build.inst(IrCmd::CHECK_TAG, tag2, build.constTag(tnumber), fallback);
+    IrOp op2 = build.inst(IrCmd::LOAD_DOUBLE, build.vmReg(2));
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(3), op2);
+    build.inst(IrCmd::STORE_TAG, build.vmReg(3), build.constTag(tnumber));
+
+    build.inst(IrCmd::RETURN, build.vmReg(1), build.constInt(1));
+
+    build.beginBlock(fallback);
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constInt(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_DOUBLE R0
+   %1 = ADD_NUM %0, 4
+   STORE_DOUBLE R1, %1
+   STORE_TAG R1, tnumber
+   STORE_SPLIT_TVALUE R2, tnumber, %1
+   STORE_DOUBLE R3, %1
+   STORE_TAG R3, tnumber
+   RETURN R1, 1i
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "TagStoreUpdatesValueVersion")
+{
+    IrOp entry = build.block(IrBlockKind::Internal);
+
+    build.beginBlock(entry);
+
+    IrOp op1 = build.inst(IrCmd::LOAD_POINTER, build.vmReg(0));
+    build.inst(IrCmd::STORE_POINTER, build.vmReg(1), op1);
+    build.inst(IrCmd::STORE_TAG, build.vmReg(1), build.constTag(tstring));
+
+    IrOp str = build.inst(IrCmd::LOAD_POINTER, build.vmReg(1));
+    build.inst(IrCmd::STORE_POINTER, build.vmReg(2), str);
+    build.inst(IrCmd::STORE_TAG, build.vmReg(2), build.constTag(tstring));
+
+    build.inst(IrCmd::RETURN, build.vmReg(1), build.constInt(1));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   %0 = LOAD_POINTER R0
+   STORE_POINTER R1, %0
+   STORE_TAG R1, tstring
+   STORE_POINTER R2, %0
+   STORE_TAG R2, tstring
+   RETURN R1, 1i
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "TagStoreUpdatesSetUpval")
+{
+    IrOp entry = build.block(IrBlockKind::Internal);
+
+    build.beginBlock(entry);
+
+    build.inst(IrCmd::STORE_TAG, build.vmReg(0), build.constTag(tnumber));
+    build.inst(IrCmd::STORE_DOUBLE, build.vmReg(0), build.constDouble(0.5));
+
+    build.inst(IrCmd::SET_UPVALUE, build.vmUpvalue(0), build.vmReg(0), build.undef());
+
+    build.inst(IrCmd::RETURN, build.vmReg(0), build.constInt(0));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   STORE_TAG R0, tnumber
+   STORE_DOUBLE R0, 0.5
+   SET_UPVALUE U0, R0, tnumber
+   RETURN R0, 0i
+
+)");
+}
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "TagSelfEqualityCheckRemoval")
+{
+    IrOp entry = build.block(IrBlockKind::Internal);
+    IrOp trueBlock = build.block(IrBlockKind::Internal);
+    IrOp falseBlock = build.block(IrBlockKind::Internal);
+
+    build.beginBlock(entry);
+
+    IrOp tag1 = build.inst(IrCmd::LOAD_TAG, build.vmReg(0));
+    IrOp tag2 = build.inst(IrCmd::LOAD_TAG, build.vmReg(0));
+    build.inst(IrCmd::JUMP_EQ_TAG, tag1, tag2, trueBlock, falseBlock);
+
+    build.beginBlock(trueBlock);
+    build.inst(IrCmd::RETURN, build.constUint(1));
+
+    build.beginBlock(falseBlock);
+    build.inst(IrCmd::RETURN, build.constUint(2));
+
+    updateUseCounts(build.function);
+    constPropInBlockChains(build, true);
+
+    CHECK("\n" + toString(build.function, /* includeUseInfo */ false) == R"(
+bb_0:
+   JUMP bb_1
+
+bb_1:
+   RETURN 1u
+
+)");
+}
+
+TEST_SUITE_END();
+
+TEST_SUITE_BEGIN("Dump");
+
+TEST_CASE_FIXTURE(IrBuilderFixture, "ToDot")
+{
+    IrOp entry = build.block(IrBlockKind::Internal);
+    IrOp a = build.block(IrBlockKind::Internal);
+    IrOp b = build.block(IrBlockKind::Internal);
+    IrOp exit = build.block(IrBlockKind::Internal);
+
+    build.beginBlock(entry);
+    build.inst(IrCmd::JUMP_EQ_TAG, build.inst(IrCmd::LOAD_TAG, build.vmReg(0)), build.constTag(tnumber), a, b);
+
+    build.beginBlock(a);
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(2), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(1)));
+    build.inst(IrCmd::JUMP, exit);
+
+    build.beginBlock(b);
+    build.inst(IrCmd::STORE_TVALUE, build.vmReg(3), build.inst(IrCmd::LOAD_TVALUE, build.vmReg(1)));
+    build.inst(IrCmd::JUMP, exit);
+
+    build.beginBlock(exit);
+    build.inst(IrCmd::RETURN, build.vmReg(2), build.constInt(2));
+
+    updateUseCounts(build.function);
+    computeCfgInfo(build.function);
+
+    // note: we don't validate the output of these to avoid test churn when formatting changes; we run these to make sure they don't assert/crash
+    toDot(build.function, /* includeInst= */ true);
+    toDotCfg(build.function);
+    toDotDjGraph(build.function);
 }
 
 TEST_SUITE_END();

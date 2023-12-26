@@ -101,10 +101,8 @@ static void close_state(lua_State* L)
     for (int i = 1; i < LUA_MEMORY_CATEGORIES; i++)
         LUAU_ASSERT(g->memcatbytes[i] == 0);
 
-#if LUA_CUSTOM_EXECUTION
     if (L->global->ecb.close)
         L->global->ecb.close(L);
-#endif
 
     (*g->frealloc)(g->ud, L, sizeof(LG), 0);
 }
@@ -212,6 +210,8 @@ lua_State* lua_newstate(lua_Alloc f, void* ud)
         g->mt[i] = NULL;
     for (i = 0; i < LUA_UTAG_LIMIT; i++)
         g->udatagc[i] = NULL;
+    for (i = 0; i < LUA_LUTAG_LIMIT; i++)
+        g->lightuserdataname[i] = NULL;
     for (i = 0; i < LUA_MEMORY_CATEGORIES; i++)
         g->memcatbytes[i] = 0;
 

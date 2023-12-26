@@ -1,10 +1,14 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/Lexer.h"
 
+#include "Luau/Common.h"
 #include "Luau/Confusables.h"
 #include "Luau/StringUtils.h"
 
 #include <limits.h>
+
+LUAU_FASTFLAGVARIABLE(LuauLexerLookaheadRemembersBraceType, false)
+LUAU_FASTFLAGVARIABLE(LuauCheckedFunctionSyntax, false)
 
 namespace Luau
 {
@@ -103,7 +107,7 @@ Lexeme::Lexeme(const Location& location, Type type, const char* name)
 }
 
 static const char* kReserved[] = {"and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or",
-    "repeat", "return", "then", "true", "until", "while"};
+    "repeat", "return", "then", "true", "until", "while", "@checked"};
 
 std::string Lexeme::toString() const
 {
@@ -136,6 +140,9 @@ std::string Lexeme::toString() const
     case DoubleColon:
         return "'::'";
 
+    case FloorDiv:
+        return "'//'";
+
     case AddAssign:
         return "'+='";
 
@@ -147,6 +154,9 @@ std::string Lexeme::toString() const
 
     case DivAssign:
         return "'/='";
+
+    case FloorDivAssign:
+        return "'//='";
 
     case ModAssign:
         return "'%='";
@@ -373,7 +383,7 @@ const Lexeme& Lexer::next(bool skipComments, bool updatePrevLocation)
     {
         // consume whitespace before the token
         while (isSpace(peekch()))
-            consume();
+            consumeAny();
 
         if (updatePrevLocation)
             prevLocation = lexeme.location;
@@ -400,6 +410,8 @@ Lexeme Lexer::lookahead()
     unsigned int currentLineOffset = lineOffset;
     Lexeme currentLexeme = lexeme;
     Location currentPrevLocation = prevLocation;
+    size_t currentBraceStackSize = braceStack.size();
+    BraceType currentBraceType = braceStack.empty() ? BraceType::Normal : braceStack.back();
 
     Lexeme result = next();
 
@@ -408,6 +420,13 @@ Lexeme Lexer::lookahead()
     lineOffset = currentLineOffset;
     lexeme = currentLexeme;
     prevLocation = currentPrevLocation;
+    if (FFlag::LuauLexerLookaheadRemembersBraceType)
+    {
+        if (braceStack.size() < currentBraceStackSize)
+            braceStack.push_back(currentBraceType);
+        else if (braceStack.size() > currentBraceStackSize)
+            braceStack.pop_back();
+    }
 
     return result;
 }
@@ -438,7 +457,17 @@ Position Lexer::position() const
     return Position(line, offset - lineOffset);
 }
 
+LUAU_FORCEINLINE
 void Lexer::consume()
+{
+    // consume() assumes current character is known to not be a newline; use consumeAny if this is not guaranteed
+    LUAU_ASSERT(!isNewline(buffer[offset]));
+
+    offset++;
+}
+
+LUAU_FORCEINLINE
+void Lexer::consumeAny()
 {
     if (isNewline(buffer[offset]))
     {
@@ -524,7 +553,7 @@ Lexeme Lexer::readLongString(const Position& start, int sep, Lexeme::Type ok, Le
         }
         else
         {
-            consume();
+            consumeAny();
         }
     }
 
@@ -540,7 +569,7 @@ void Lexer::readBackslashInString()
     case '\r':
         consume();
         if (peekch() == '\n')
-            consume();
+            consumeAny();
         break;
 
     case 0:
@@ -549,11 +578,11 @@ void Lexer::readBackslashInString()
     case 'z':
         consume();
         while (isSpace(peekch()))
-            consume();
+            consumeAny();
         break;
 
     default:
-        consume();
+        consumeAny();
     }
 }
 
@@ -681,7 +710,7 @@ Lexeme Lexer::readNumber(const Position& start, unsigned int startOffset)
 
 std::pair<AstName, Lexeme::Type> Lexer::readName()
 {
-    LUAU_ASSERT(isAlpha(peekch()) || peekch() == '_');
+    LUAU_ASSERT(isAlpha(peekch()) || peekch() == '_' || peekch() == '@');
 
     unsigned int startOffset = offset;
 
@@ -878,15 +907,31 @@ Lexeme Lexer::readNext()
             return Lexeme(Location(start, 1), '+');
 
     case '/':
+    {
         consume();
 
-        if (peekch() == '=')
+        char ch = peekch();
+
+        if (ch == '=')
         {
             consume();
             return Lexeme(Location(start, 2), Lexeme::DivAssign);
         }
+        else if (ch == '/')
+        {
+            consume();
+
+            if (peekch() == '=')
+            {
+                consume();
+                return Lexeme(Location(start, 3), Lexeme::FloorDivAssign);
+            }
+            else
+                return Lexeme(Location(start, 2), Lexeme::FloorDiv);
+        }
         else
             return Lexeme(Location(start, 1), '/');
+    }
 
     case '*':
         consume();
@@ -939,13 +984,29 @@ Lexeme Lexer::readNext()
     case ';':
     case ',':
     case '#':
+    case '?':
+    case '&':
+    case '|':
     {
         char ch = peekch();
         consume();
 
         return Lexeme(Location(start, 1), ch);
     }
+    case '@':
+    {
+        if (FFlag::LuauCheckedFunctionSyntax)
+        {
+            // We're trying to lex the token @checked
+            LUAU_ASSERT(peekch() == '@');
 
+            std::pair<AstName, Lexeme::Type> maybeChecked = readName();
+            if (maybeChecked.second != Lexeme::ReservedChecked)
+                return Lexeme(Location(start, position()), Lexeme::Error);
+
+            return Lexeme(Location(start, position()), maybeChecked.second, maybeChecked.first.value);
+        }
+    }
     default:
         if (isDigit(peekch()))
         {

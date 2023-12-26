@@ -11,10 +11,15 @@
 
 using namespace Luau;
 
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(LuauAlwaysCommitInferencesOfFunctionCalls);
+LUAU_FASTFLAG(LuauTransitiveSubtyping);
 
 struct TryUnifyFixture : Fixture
 {
+    // Cannot use `TryUnifyFixture` under DCR.
+    ScopedFastFlag noDcr{FFlag::DebugLuauDeferredConstraintResolution, false};
+
     TypeArena arena;
     ScopePtr globalScope{new Scope{arena.addTypePack({TypeId{}})}};
     InternalErrorReporter iceHandler;
@@ -28,7 +33,7 @@ TEST_SUITE_BEGIN("TryUnifyTests");
 TEST_CASE_FIXTURE(TryUnifyFixture, "primitives_unify")
 {
     ScopedFastFlag sff[] = {
-        {"LuauTransitiveSubtyping", true},
+        {FFlag::LuauTransitiveSubtyping, true},
     };
 
     Type numberOne{TypeVariant{PrimitiveType{PrimitiveType::Number}}};
@@ -43,7 +48,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "primitives_unify")
 TEST_CASE_FIXTURE(TryUnifyFixture, "compatible_functions_are_unified")
 {
     ScopedFastFlag sff[] = {
-        {"LuauTransitiveSubtyping", true},
+        {FFlag::LuauTransitiveSubtyping, true},
     };
 
     Type functionOne{
@@ -64,7 +69,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "compatible_functions_are_unified")
 TEST_CASE_FIXTURE(TryUnifyFixture, "incompatible_functions_are_preserved")
 {
     ScopedFastFlag sff[] = {
-        {"LuauTransitiveSubtyping", true},
+        {FFlag::LuauTransitiveSubtyping, true},
     };
 
     TypePackVar argPackOne{TypePack{{arena.freshType(globalScope->level)}, std::nullopt}};
@@ -90,7 +95,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "incompatible_functions_are_preserved")
 TEST_CASE_FIXTURE(TryUnifyFixture, "tables_can_be_unified")
 {
     ScopedFastFlag sff[] = {
-        {"LuauTransitiveSubtyping", true},
+        {FFlag::LuauTransitiveSubtyping, true},
     };
 
     Type tableOne{TypeVariant{
@@ -116,7 +121,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "tables_can_be_unified")
 TEST_CASE_FIXTURE(TryUnifyFixture, "incompatible_tables_are_preserved")
 {
     ScopedFastFlag sff[] = {
-        {"LuauTransitiveSubtyping", true},
+        {FFlag::LuauTransitiveSubtyping, true},
     };
 
     Type tableOne{TypeVariant{
@@ -139,7 +144,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "incompatible_tables_are_preserved")
     CHECK_NE(*getMutable<TableType>(&tableOne)->props["foo"].type(), *getMutable<TableType>(&tableTwo)->props["foo"].type());
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_intersection_sub_never")
+TEST_CASE_FIXTURE(Fixture, "uninhabited_intersection_sub_never")
 {
     CheckResult result = check(R"(
         function f(arg : string & number) : never
@@ -149,7 +154,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_intersection_sub_never")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_intersection_sub_anything")
+TEST_CASE_FIXTURE(Fixture, "uninhabited_intersection_sub_anything")
 {
     CheckResult result = check(R"(
         function f(arg : string & number) : boolean
@@ -159,12 +164,8 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_intersection_sub_anything")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_table_sub_never")
+TEST_CASE_FIXTURE(Fixture, "uninhabited_table_sub_never")
 {
-    ScopedFastFlag sffs[]{
-        {"LuauUninhabitedSubAnything2", true},
-    };
-
     CheckResult result = check(R"(
         function f(arg : { prop : string & number }) : never
           return arg
@@ -173,12 +174,8 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_table_sub_never")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_table_sub_anything")
+TEST_CASE_FIXTURE(Fixture, "uninhabited_table_sub_anything")
 {
-    ScopedFastFlag sffs[]{
-        {"LuauUninhabitedSubAnything2", true},
-    };
-
     CheckResult result = check(R"(
         function f(arg : { prop : string & number }) : boolean
           return arg
@@ -187,9 +184,11 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "uninhabited_table_sub_anything")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "members_of_failed_typepack_unification_are_unified_with_errorType")
+TEST_CASE_FIXTURE(Fixture, "members_of_failed_typepack_unification_are_unified_with_errorType")
 {
-    ScopedFastFlag sff{"LuauAlwaysCommitInferencesOfFunctionCalls", true};
+    ScopedFastFlag sff[] = {
+        {FFlag::LuauAlwaysCommitInferencesOfFunctionCalls, true},
+    };
 
     CheckResult result = check(R"(
         function f(arg: number) end
@@ -204,9 +203,11 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "members_of_failed_typepack_unification_are_u
     CHECK_EQ("*error-type*", toString(requireType("b")));
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "result_of_failed_typepack_unification_is_constrained")
+TEST_CASE_FIXTURE(Fixture, "result_of_failed_typepack_unification_is_constrained")
 {
-    ScopedFastFlag sff{"LuauAlwaysCommitInferencesOfFunctionCalls", true};
+    ScopedFastFlag sff[] = {
+        {FFlag::LuauAlwaysCommitInferencesOfFunctionCalls, true},
+    };
 
     CheckResult result = check(R"(
         function f(arg: number) return arg end
@@ -222,7 +223,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "result_of_failed_typepack_unification_is_con
     CHECK_EQ("number", toString(requireType("c")));
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "typepack_unification_should_trim_free_tails")
+TEST_CASE_FIXTURE(Fixture, "typepack_unification_should_trim_free_tails")
 {
     CheckResult result = check(R"(
         --!strict
@@ -262,7 +263,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "variadic_tails_respect_progress")
     CHECK(state.errors.empty());
 }
 
-TEST_CASE_FIXTURE(TryUnifyFixture, "variadics_should_use_reversed_properly")
+TEST_CASE_FIXTURE(Fixture, "variadics_should_use_reversed_properly")
 {
     CheckResult result = check(R"(
         --!strict
@@ -352,8 +353,7 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "txnlog_preserves_pack_owner")
 TEST_CASE_FIXTURE(TryUnifyFixture, "metatables_unify_against_shape_of_free_table")
 {
     ScopedFastFlag sff[] = {
-        {"LuauTransitiveSubtyping", true},
-        {"DebugLuauDeferredConstraintResolution", true},
+        {FFlag::LuauTransitiveSubtyping, true},
     };
 
     TableType::Props freeProps{
@@ -377,15 +377,18 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "metatables_unify_against_shape_of_free_table
     TypeId target = arena.addType(TableType{TableState::Unsealed, TypeLevel{}});
     TypeId metatable = arena.addType(MetatableType{target, mt});
 
+    state.enableNewSolver();
     state.tryUnify(metatable, free);
     state.log.commit();
 
     REQUIRE_EQ(state.errors.size(), 1);
-
-    std::string expected = "Type '{ @metatable {| __index: {| foo: string |} |}, {  } }' could not be converted into '{- foo: number -}'\n"
-                           "caused by:\n"
-                           "  Type 'number' could not be converted into 'string'";
-    CHECK_EQ(toString(state.errors[0]), expected);
+    const std::string expected = R"(Type
+    '{ @metatable {| __index: {| foo: string |} |}, {  } }'
+could not be converted into
+    '{- foo: number -}'
+caused by:
+  Type 'number' could not be converted into 'string')";
+    CHECK_EQ(expected, toString(state.errors[0]));
 }
 
 TEST_CASE_FIXTURE(TryUnifyFixture, "fuzz_tail_unification_issue")
@@ -447,11 +450,10 @@ TEST_CASE_FIXTURE(TryUnifyFixture, "unifying_two_unions_under_dcr_does_not_creat
     const TypeId innerType = arena.freshType(nestedScope.get());
 
     ScopedFastFlag sffs[]{
-        {"DebugLuauDeferredConstraintResolution", true},
-        {"LuauAlwaysCommitInferencesOfFunctionCalls", true},
+        {FFlag::LuauAlwaysCommitInferencesOfFunctionCalls, true},
     };
 
-    state.enableScopeTests();
+    state.enableNewSolver();
 
     SUBCASE("equal_scopes")
     {

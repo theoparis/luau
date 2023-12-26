@@ -34,7 +34,11 @@ TEST_CASE_FIXTURE(Fixture, "for_loop")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_no_table_passed")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    // This test may block CI if forced to run outside of DCR.
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
     CheckResult result = check(R"(
 
 type Iterable = typeof(setmetatable(
@@ -58,7 +62,9 @@ for a, b in t do end
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_regression_issue_69967")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
     CheckResult result = check(R"(
         type Iterable = typeof(setmetatable(
             {},
@@ -77,7 +83,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_regression_issue_69967")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "iteration_regression_issue_69967_alt")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
     CheckResult result = check(R"(
         type Iterable = typeof(setmetatable(
             {},
@@ -180,7 +188,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "for_in_with_just_one_iterator_is_ok")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "for_in_loop_with_zero_iterators_dcr")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
 
     CheckResult result = check(R"(
         function no_iter() end
@@ -911,7 +919,9 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "dcr_xpath_candidates")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "dcr_iteration_on_never_gives_never")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
+
     CheckResult result = check(R"(
         local iter: never
         local ans

@@ -79,31 +79,34 @@ void emitInstCall(AssemblyBuilderX64& build, ModuleHelpers& helpers, int ra, int
 
         // Set L->top to ci->top as most function expect (no vararg)
         build.mov(rax, qword[ci + offsetof(CallInfo, top)]);
-        build.mov(qword[rState + offsetof(lua_State, top)], rax);
 
         // But if it is vararg, update it to 'argi'
         Label skipVararg;
 
         build.test(byte[proto + offsetof(Proto, is_vararg)], 1);
         build.jcc(ConditionX64::Zero, skipVararg);
+        build.mov(rax, argi);
 
-        build.mov(qword[rState + offsetof(lua_State, top)], argi);
         build.setLabel(skipVararg);
 
-        // Get native function entry
-        build.mov(rax, qword[proto + offsetof(Proto, exectarget)]);
-        build.test(rax, rax);
-        build.jcc(ConditionX64::Zero, helpers.continueCallInVm);
+        build.mov(qword[rState + offsetof(lua_State, top)], rax);
 
-        // Mark call frame as native
-        build.mov(dword[ci + offsetof(CallInfo, flags)], LUA_CALLINFO_NATIVE);
+        // Switch current code
+        // ci->savedpc = p->code;
+        build.mov(rax, qword[proto + offsetof(Proto, code)]);
+        build.mov(sCode, rax); // note: this needs to be before the next store for optimal performance
+        build.mov(qword[ci + offsetof(CallInfo, savedpc)], rax);
 
         // Switch current constants
         build.mov(rConstants, qword[proto + offsetof(Proto, k)]);
 
-        // Switch current code
-        build.mov(rdx, qword[proto + offsetof(Proto, code)]);
-        build.mov(sCode, rdx);
+        // Get native function entry
+        build.mov(rax, qword[proto + offsetof(Proto, exectarget)]);
+        build.test(rax, rax);
+        build.jcc(ConditionX64::Zero, helpers.exitContinueVm);
+
+        // Mark call frame as native
+        build.mov(dword[ci + offsetof(CallInfo, flags)], LUA_CALLINFO_NATIVE);
 
         build.jmp(rax);
     }
@@ -246,7 +249,7 @@ void emitInstReturn(AssemblyBuilderX64& build, ModuleHelpers& helpers, int ra, i
     }
 }
 
-void emitInstSetList(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int rb, int count, uint32_t index)
+void emitInstSetList(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int rb, int count, uint32_t index, int knownSize)
 {
     // TODO: This should use IrCallWrapperX64
     RegisterX64 rArg1 = (build.abi == ABIX64::Windows) ? rcx : rdi;
@@ -280,25 +283,28 @@ void emitInstSetList(IrRegAllocX64& regs, AssemblyBuilderX64& build, int ra, int
         build.add(last, index - 1);
     }
 
-    Label skipResize;
-
     RegisterX64 table = regs.takeReg(rax, kInvalidInstIdx);
 
     build.mov(table, luauRegValue(ra));
 
-    // Resize if h->sizearray < last
-    build.cmp(dword[table + offsetof(Table, sizearray)], last);
-    build.jcc(ConditionX64::NotBelow, skipResize);
+    if (count == LUA_MULTRET || knownSize < 0 || knownSize < int(index + count - 1))
+    {
+        Label skipResize;
 
-    // Argument setup reordered to avoid conflicts
-    LUAU_ASSERT(rArg3 != table);
-    build.mov(dwordReg(rArg3), last);
-    build.mov(rArg2, table);
-    build.mov(rArg1, rState);
-    build.call(qword[rNativeContext + offsetof(NativeContext, luaH_resizearray)]);
-    build.mov(table, luauRegValue(ra)); // Reload cloberred register value
+        // Resize if h->sizearray < last
+        build.cmp(dword[table + offsetof(Table, sizearray)], last);
+        build.jcc(ConditionX64::NotBelow, skipResize);
 
-    build.setLabel(skipResize);
+        // Argument setup reordered to avoid conflicts
+        LUAU_ASSERT(rArg3 != table);
+        build.mov(dwordReg(rArg3), last);
+        build.mov(rArg2, table);
+        build.mov(rArg1, rState);
+        build.call(qword[rNativeContext + offsetof(NativeContext, luaH_resizearray)]);
+        build.mov(table, luauRegValue(ra)); // Reload clobbered register value
+
+        build.setLabel(skipResize);
+    }
 
     RegisterX64 arrayDst = rdx;
     RegisterX64 offset = rcx;

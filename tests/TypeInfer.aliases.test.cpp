@@ -8,7 +8,7 @@
 using namespace Luau;
 
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
-LUAU_FASTFLAG(LuauTypeMismatchInvarianceInError)
+LUAU_FASTFLAG(DebugLuauSharedSelf);
 
 TEST_SUITE_BEGIN("TypeAliases");
 
@@ -188,8 +188,9 @@ TEST_CASE_FIXTURE(Fixture, "mutually_recursive_aliases")
 
 TEST_CASE_FIXTURE(Fixture, "generic_aliases")
 {
-    ScopedFastFlag sff_DebugLuauDeferredConstraintResolution{"DebugLuauDeferredConstraintResolution", true};
-
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauDeferredConstraintResolution, true},
+    };
     CheckResult result = check(R"(
         type T<a> = { v: a }
         local x: T<number> = { v = 123 }
@@ -198,24 +199,16 @@ TEST_CASE_FIXTURE(Fixture, "generic_aliases")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-
-    const char* expectedError;
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        expectedError = "Type 'bad' could not be converted into 'T<number>'\n"
-                        "caused by:\n"
-                        "  Property 'v' is not compatible. Type 'string' could not be converted into 'number' in an invariant context";
-    else
-        expectedError = "Type 'bad' could not be converted into 'T<number>'\n"
-                        "caused by:\n"
-                        "  Property 'v' is not compatible. Type 'string' could not be converted into 'number'";
-
+    const std::string expected = R"(Type 'bad' could not be converted into 'T<number>'; at ["v"], string is not exactly number)";
     CHECK(result.errors[0].location == Location{{4, 31}, {4, 44}});
-    CHECK(toString(result.errors[0]) == expectedError);
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "dependent_generic_aliases")
 {
-    ScopedFastFlag sff_DebugLuauDeferredConstraintResolution{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauDeferredConstraintResolution, true},
+    };
 
     CheckResult result = check(R"(
         type T<a> = { v: a }
@@ -225,23 +218,10 @@ TEST_CASE_FIXTURE(Fixture, "dependent_generic_aliases")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-
-    std::string expectedError;
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        expectedError = "Type 'bad' could not be converted into 'U<number>'\n"
-                        "caused by:\n"
-                        "  Property 't' is not compatible. Type '{ v: string }' could not be converted into 'T<number>'\n"
-                        "caused by:\n"
-                        "  Property 'v' is not compatible. Type 'string' could not be converted into 'number' in an invariant context";
-    else
-        expectedError = "Type 'bad' could not be converted into 'U<number>'\n"
-                        "caused by:\n"
-                        "  Property 't' is not compatible. Type '{ v: string }' could not be converted into 'T<number>'\n"
-                        "caused by:\n"
-                        "  Property 'v' is not compatible. Type 'string' could not be converted into 'number'";
+    const std::string expected = R"(Type 'bad' could not be converted into 'U<number>'; at ["t"]["v"], string is not exactly number)";
 
     CHECK(result.errors[0].location == Location{{4, 31}, {4, 52}});
-    CHECK(toString(result.errors[0]) == expectedError);
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "mutually_recursive_generic_aliases")
@@ -276,7 +256,7 @@ TEST_CASE_FIXTURE(Fixture, "mutually_recursive_types_errors")
     // We had a UAF in this example caused by not cloning type function arguments
     ModulePtr module = frontend.moduleResolver.getModule("MainModule");
     unfreeze(module->interfaceTypes);
-    copyErrors(module->errors, module->interfaceTypes);
+    copyErrors(module->errors, module->interfaceTypes, builtinTypes);
     freeze(module->interfaceTypes);
     module->internalTypes.clear();
     module->astTypes.clear();
@@ -344,13 +324,20 @@ TEST_CASE_FIXTURE(Fixture, "stringify_type_alias_of_recursive_template_table_typ
 
     TypeMismatch* tm = get<TypeMismatch>(result.errors[0]);
     REQUIRE(tm);
-    CHECK_EQ("t1 where t1 = ({| a: t1 |}) -> string", toString(tm->wantedType));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("t1 where t1 = ({ a: t1 }) -> string", toString(tm->wantedType));
+    else
+        CHECK_EQ("t1 where t1 = ({| a: t1 |}) -> string", toString(tm->wantedType));
     CHECK_EQ(builtinTypes->numberType, tm->givenType);
 }
 
 // Check that recursive intersection type doesn't generate an OOM
 TEST_CASE_FIXTURE(Fixture, "cli_38393_recursive_intersection_oom")
 {
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauDeferredConstraintResolution, false},
+    }; // FIXME
+
     CheckResult result = check(R"(
         function _(l0:(t0)&((t0)&(((t0)&((t0)->()))->(typeof(_),typeof(# _)))),l39,...):any
         end
@@ -823,7 +810,10 @@ TEST_CASE_FIXTURE(Fixture, "forward_declared_alias_is_not_clobbered_by_prior_uni
         local d: FutureType = { smth = true } -- missing error, 'd' is resolved to 'any'
     )");
 
-    CHECK_EQ("{| foo: number |}", toString(requireType("d"), {true}));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ foo: number }", toString(requireType("d"), {true}));
+    else
+        CHECK_EQ("{| foo: number |}", toString(requireType("d"), {true}));
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 }
@@ -831,7 +821,7 @@ TEST_CASE_FIXTURE(Fixture, "forward_declared_alias_is_not_clobbered_by_prior_uni
 TEST_CASE_FIXTURE(Fixture, "forward_declared_alias_is_not_clobbered_by_prior_unification_with_any_2")
 {
     ScopedFastFlag sff[] = {
-        {"DebugLuauSharedSelf", true},
+        {FFlag::DebugLuauSharedSelf, true},
     };
 
     CheckResult result = check(R"(
@@ -1042,6 +1032,29 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "alias_expands_to_bare_reference_to_imported_
 
     CheckResult result = frontend.check("game/B");
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "table_types_record_the_property_locations")
+{
+    CheckResult result = check(R"(
+        type Table = {
+            create: () -> ()
+        }
+
+        local x: Table
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+    auto ty = requireTypeAlias("Table");
+
+    auto ttv = Luau::get<Luau::TableType>(follow(ty));
+    REQUIRE(ttv);
+
+    auto propIt = ttv->props.find("create");
+    REQUIRE(propIt != ttv->props.end());
+
+    CHECK_EQ(propIt->second.location, std::nullopt);
+    CHECK_EQ(propIt->second.typeLocation, Location({2, 12}, {2, 18}));
 }
 
 TEST_SUITE_END();

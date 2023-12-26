@@ -83,13 +83,13 @@ ClassFixture::ClassFixture()
 
     TypeId vector2MetaType = arena.addType(TableType{});
 
-    TypeId vector2InstanceType = arena.addType(ClassType{"Vector2", {}, nullopt, vector2MetaType, {}, {}, "Test"});
+    vector2InstanceType = arena.addType(ClassType{"Vector2", {}, nullopt, vector2MetaType, {}, {}, "Test"});
     getMutable<ClassType>(vector2InstanceType)->props = {
         {"X", {numberType}},
         {"Y", {numberType}},
     };
 
-    TypeId vector2Type = arena.addType(ClassType{"Vector2", {}, nullopt, nullopt, {}, {}, "Test"});
+    vector2Type = arena.addType(ClassType{"Vector2", {}, nullopt, nullopt, {}, {}, "Test"});
     getMutable<ClassType>(vector2Type)->props = {
         {"New", {makeFunction(arena, nullopt, {numberType, numberType}, {vector2InstanceType})}},
     };
@@ -107,7 +107,6 @@ ClassFixture::ClassFixture()
     globals.globalScope->exportedTypeBindings["CallableClass"] = TypeFun{{}, callableClassType};
 
     auto addIndexableClass = [&arena, &globals](const char* className, TypeId keyType, TypeId returnType) {
-        ScopedFastFlag LuauTypecheckClassTypeIndexers("LuauTypecheckClassTypeIndexers", true);
         TypeId indexableClassMetaType = arena.addType(TableType{});
         TypeId indexableClassType =
             arena.addType(ClassType{className, {}, nullopt, indexableClassMetaType, {}, {}, "Test", TableIndexer{keyType, returnType}});

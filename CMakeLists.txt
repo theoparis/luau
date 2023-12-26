@@ -12,7 +12,6 @@ option(LUAU_BUILD_WEB "Build Web module" OFF)
 option(LUAU_WERROR "Warnings as errors" OFF)
 option(LUAU_STATIC_CRT "Link with the static CRT (/MT)" OFF)
 option(LUAU_EXTERN_C "Use extern C for all APIs" OFF)
-option(LUAU_NATIVE "Enable support for native code generation" OFF)
 
 cmake_policy(SET CMP0054 NEW)
 cmake_policy(SET CMP0091 NEW)
@@ -26,6 +25,7 @@ project(Luau LANGUAGES CXX C)
 add_library(Luau.Common INTERFACE)
 add_library(Luau.Ast STATIC)
 add_library(Luau.Compiler STATIC)
+add_library(Luau.Config STATIC)
 add_library(Luau.Analysis STATIC)
 add_library(Luau.CodeGen STATIC)
 add_library(Luau.VM STATIC)
@@ -37,6 +37,7 @@ if(LUAU_BUILD_CLI)
     add_executable(Luau.Ast.CLI)
     add_executable(Luau.Reduce.CLI)
     add_executable(Luau.Compile.CLI)
+    add_executable(Luau.Bytecode.CLI)
 
     # This also adds target `name` on Linux/macOS and `name.exe` on Windows
     set_target_properties(Luau.Repl.CLI PROPERTIES OUTPUT_NAME luau)
@@ -44,9 +45,10 @@ if(LUAU_BUILD_CLI)
     set_target_properties(Luau.Ast.CLI PROPERTIES OUTPUT_NAME luau-ast)
     set_target_properties(Luau.Reduce.CLI PROPERTIES OUTPUT_NAME luau-reduce)
     set_target_properties(Luau.Compile.CLI PROPERTIES OUTPUT_NAME luau-compile)
+    set_target_properties(Luau.Bytecode.CLI PROPERTIES OUTPUT_NAME luau-bytecode)
 
     install(
-        TARGETS Luau.Repl.CLI Luau.Analyze.CLI Luau.Ast.CLI Luau.Reduce.CLI Luau.Compile.CLI
+        TARGETS Luau.Repl.CLI Luau.Analyze.CLI Luau.Ast.CLI Luau.Reduce.CLI Luau.Compile.CLI Luau.Bytecode.CLI
     )
 endif()
 
@@ -75,9 +77,13 @@ target_compile_features(Luau.Compiler PUBLIC cxx_std_17)
 target_include_directories(Luau.Compiler PUBLIC Compiler/include)
 target_link_libraries(Luau.Compiler PUBLIC Luau.Ast)
 
+target_compile_features(Luau.Config PUBLIC cxx_std_17)
+target_include_directories(Luau.Config PUBLIC Config/include)
+target_link_libraries(Luau.Config PUBLIC Luau.Ast)
+
 target_compile_features(Luau.Analysis PUBLIC cxx_std_17)
 target_include_directories(Luau.Analysis PUBLIC Analysis/include)
-target_link_libraries(Luau.Analysis PUBLIC Luau.Ast)
+target_link_libraries(Luau.Analysis PUBLIC Luau.Ast Luau.Config)
 
 target_compile_features(Luau.CodeGen PRIVATE cxx_std_17)
 target_include_directories(Luau.CodeGen PUBLIC CodeGen/include)
@@ -93,7 +99,7 @@ target_include_directories(isocline PUBLIC extern/isocline/include)
 target_include_directories(Luau.VM.Internals INTERFACE VM/src)
 
 install(
-    TARGETS Luau.VM Luau.CodeGen Luau.Common Luau.Ast Luau.Analysis Luau.Compiler
+    TARGETS Luau.VM Luau.CodeGen Luau.Common Luau.Ast Luau.Analysis Luau.Compiler Luau.Config
     EXPORT LuauTargets
 )
 install(
@@ -161,13 +167,7 @@ if(LUAU_EXTERN_C)
     target_compile_definitions(Luau.VM PUBLIC LUA_USE_LONGJMP=1)
     target_compile_definitions(Luau.VM PUBLIC LUA_API=extern\"C\")
     target_compile_definitions(Luau.Compiler PUBLIC LUACODE_API=extern\"C\")
-endif()
-
-if(LUAU_NATIVE)
-    target_compile_definitions(Luau.VM PUBLIC LUA_CUSTOM_EXECUTION=1)
-    if(LUAU_EXTERN_C)
-        target_compile_definitions(Luau.CodeGen PUBLIC LUACODEGEN_API=extern\"C\")
-    endif()
+    target_compile_definitions(Luau.CodeGen PUBLIC LUACODEGEN_API=extern\"C\")
 endif()
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND MSVC_VERSION GREATER_EQUAL 1924)
@@ -209,10 +209,11 @@ if(LUAU_BUILD_CLI)
     target_compile_options(Luau.Analyze.CLI PRIVATE ${LUAU_OPTIONS})
     target_compile_options(Luau.Ast.CLI PRIVATE ${LUAU_OPTIONS})
     target_compile_options(Luau.Compile.CLI PRIVATE ${LUAU_OPTIONS})
+    target_compile_options(Luau.Bytecode.CLI PRIVATE ${LUAU_OPTIONS})
 
     target_include_directories(Luau.Repl.CLI PRIVATE extern extern/isocline/include)
 
-    target_link_libraries(Luau.Repl.CLI PRIVATE Luau.Compiler Luau.CodeGen Luau.VM isocline)
+    target_link_libraries(Luau.Repl.CLI PRIVATE Luau.Compiler Luau.Config Luau.CodeGen Luau.VM isocline)
 
     if(UNIX)
         find_library(LIBPTHREAD pthread)
@@ -231,6 +232,8 @@ if(LUAU_BUILD_CLI)
     target_link_libraries(Luau.Reduce.CLI PRIVATE Luau.Common Luau.Ast Luau.Analysis)
 
     target_link_libraries(Luau.Compile.CLI PRIVATE Luau.Compiler Luau.VM Luau.CodeGen)
+
+    target_link_libraries(Luau.Bytecode.CLI PRIVATE Luau.Compiler Luau.VM Luau.CodeGen)
 endif()
 
 if(LUAU_BUILD_TESTS)
@@ -242,10 +245,12 @@ if(LUAU_BUILD_TESTS)
     target_compile_options(Luau.Conformance PRIVATE ${LUAU_OPTIONS})
     target_include_directories(Luau.Conformance PRIVATE extern)
     target_link_libraries(Luau.Conformance PRIVATE Luau.Analysis Luau.Compiler Luau.CodeGen Luau.VM)
+    file(REAL_PATH "tests/conformance" LUAU_CONFORMANCE_SOURCE_DIR)
+    target_compile_definitions(Luau.Conformance PRIVATE LUAU_CONFORMANCE_SOURCE_DIR="${LUAU_CONFORMANCE_SOURCE_DIR}")
 
     target_compile_options(Luau.CLI.Test PRIVATE ${LUAU_OPTIONS})
     target_include_directories(Luau.CLI.Test PRIVATE extern CLI)
-    target_link_libraries(Luau.CLI.Test PRIVATE Luau.Compiler Luau.CodeGen Luau.VM isocline)
+    target_link_libraries(Luau.CLI.Test PRIVATE Luau.Compiler Luau.Config Luau.CodeGen Luau.VM isocline)
     if(UNIX)
         find_library(LIBPTHREAD pthread)
         if (LIBPTHREAD)
@@ -268,3 +273,21 @@ if(LUAU_BUILD_WEB)
     # the output is a single .js file with an embedded wasm blob
     target_link_options(Luau.Web PRIVATE -sSINGLE_FILE=1)
 endif()
+
+add_subdirectory(fuzz)
+
+# validate dependencies for internal libraries
+foreach(LIB Luau.Ast Luau.Compiler Luau.Config Luau.Analysis Luau.CodeGen Luau.VM)
+    if(TARGET ${LIB})
+        get_target_property(DEPENDS ${LIB} LINK_LIBRARIES)
+        if(LIB MATCHES "CodeGen|VM" AND DEPENDS MATCHES "Ast|Analysis|Config|Compiler")
+            message(FATAL_ERROR ${LIB} " is a runtime component but it depends on one of the offline components")
+        endif()
+        if(LIB MATCHES "Ast|Analysis|Compiler" AND DEPENDS MATCHES "CodeGen|VM")
+            message(FATAL_ERROR ${LIB} " is an offline component but it depends on one of the runtime components")
+        endif()
+        if(LIB MATCHES "Ast|Compiler" AND DEPENDS MATCHES "Analysis|Config")
+            message(FATAL_ERROR ${LIB} " is a compiler component but it depends on one of the analysis components")
+        endif()
+    endif()
+endforeach()

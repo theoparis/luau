@@ -13,7 +13,7 @@ namespace CodeGen
 namespace X64
 {
 
-static const std::array<OperandX64, 6> kWindowsGprOrder = {rcx, rdx, r8, r9, addr[rsp + 32], addr[rsp + 40]};
+static const std::array<OperandX64, 6> kWindowsGprOrder = {rcx, rdx, r8, r9, addr[rsp + kStackRegHomeStorage], addr[rsp + kStackRegHomeStorage + 8]};
 static const std::array<OperandX64, 6> kSystemvGprOrder = {rdi, rsi, rdx, rcx, r8, r9};
 static const std::array<OperandX64, 4> kXmmOrder = {xmm0, xmm1, xmm2, xmm3}; // Common order for first 4 fp arguments on Windows/SystemV
 
@@ -212,7 +212,13 @@ RegisterX64 IrCallWrapperX64::suggestNextArgumentRegister(SizeX64 size) const
 {
     OperandX64 target = getNextArgumentTarget(size);
 
-    return target.cat == CategoryX64::reg ? regs.takeReg(target.base, kInvalidInstIdx) : regs.allocReg(size, kInvalidInstIdx);
+    if (target.cat != CategoryX64::reg)
+        return regs.allocReg(size, kInvalidInstIdx);
+
+    if (!regs.canTakeReg(target.base))
+        return regs.allocReg(size, kInvalidInstIdx);
+
+    return regs.takeReg(target.base, kInvalidInstIdx);
 }
 
 OperandX64 IrCallWrapperX64::getNextArgumentTarget(SizeX64 size) const

@@ -7,6 +7,8 @@
 
 #include "doctest.h"
 
+LUAU_FASTFLAG(LuauDefinitionFileSetModuleName)
+
 using namespace Luau;
 
 TEST_SUITE_BEGIN("DefinitionTests");
@@ -228,10 +230,14 @@ TEST_CASE_FIXTURE(Fixture, "class_definition_function_prop")
         declare class Foo
             X: (number) -> string
         end
+
+        declare Foo: {
+            new: () -> Foo
+        }
     )");
 
     CheckResult result = check(R"(
-        local x: Foo
+        local x: Foo = Foo.new()
         local prop = x.X
     )");
 
@@ -248,10 +254,14 @@ TEST_CASE_FIXTURE(Fixture, "definition_file_class_function_args")
 
             y: (a: number, b: string) -> string
         end
+
+        declare Foo: {
+            new: () -> Foo
+        }
     )");
 
     CheckResult result = check(R"(
-        local x: Foo
+        local x: Foo = Foo.new()
         local methodRef1 = x.foo1
         local methodRef2 = x.foo2
         local prop = x.y
@@ -397,9 +407,6 @@ TEST_CASE_FIXTURE(Fixture, "class_definition_string_props")
 
 TEST_CASE_FIXTURE(Fixture, "class_definition_indexer")
 {
-    ScopedFastFlag LuauParseDeclareClassIndexer("LuauParseDeclareClassIndexer", true);
-    ScopedFastFlag LuauTypecheckClassTypeIndexers("LuauTypecheckClassTypeIndexers", true);
-
     loadDefinition(R"(
         declare class Foo
             [number]: string
@@ -442,6 +449,29 @@ TEST_CASE_FIXTURE(Fixture, "class_definitions_reference_other_classes")
     freeze(frontend.globals.globalTypes);
 
     REQUIRE(result.success);
+}
+
+TEST_CASE_FIXTURE(Fixture, "definition_file_has_source_module_name_set")
+{
+    ScopedFastFlag sff{FFlag::LuauDefinitionFileSetModuleName, true};
+
+    LoadDefinitionFileResult result = loadDefinition(R"(
+        declare class Foo
+        end
+    )");
+
+    REQUIRE(result.success);
+
+    CHECK_EQ(result.sourceModule.name, "@test");
+    CHECK_EQ(result.sourceModule.humanReadableName, "@test");
+
+    std::optional<TypeFun> fooTy = frontend.globals.globalScope->lookupType("Foo");
+    REQUIRE(fooTy);
+
+    const ClassType* ctv = get<ClassType>(fooTy->type);
+
+    REQUIRE(ctv);
+    CHECK_EQ(ctv->definitionModuleName, "@test");
 }
 
 TEST_SUITE_END();

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Luau/AssemblyBuilderA64.h"
+#include "Luau/DenseHash.h"
 #include "Luau/IrData.h"
 
 #include "IrRegAllocA64.h"
@@ -15,24 +16,27 @@ namespace CodeGen
 {
 
 struct ModuleHelpers;
-struct NativeState;
 struct AssemblyOptions;
+struct LoweringStats;
 
 namespace A64
 {
 
 struct IrLoweringA64
 {
-    IrLoweringA64(AssemblyBuilderA64& build, ModuleHelpers& helpers, NativeState& data, IrFunction& function);
+    IrLoweringA64(AssemblyBuilderA64& build, ModuleHelpers& helpers, IrFunction& function, LoweringStats* stats);
 
-    void lowerInst(IrInst& inst, uint32_t index, IrBlock& next);
-    void finishBlock();
+    void lowerInst(IrInst& inst, uint32_t index, const IrBlock& next);
+    void finishBlock(const IrBlock& curr, const IrBlock& next);
     void finishFunction();
 
     bool hasError() const;
 
-    bool isFallthroughBlock(IrBlock target, IrBlock next);
-    void jumpOrFallthrough(IrBlock& target, IrBlock& next);
+    bool isFallthroughBlock(const IrBlock& target, const IrBlock& next);
+    void jumpOrFallthrough(IrBlock& target, const IrBlock& next);
+
+    Label& getTargetLabel(IrOp op, Label& fresh);
+    void finalizeTargetLabel(IrOp op, Label& fresh);
 
     // Operand data build helpers
     // May emit data/address synthesis instructions
@@ -40,6 +44,7 @@ struct IrLoweringA64
     RegisterA64 tempInt(IrOp op);
     RegisterA64 tempUint(IrOp op);
     AddressA64 tempAddr(IrOp op, int offset);
+    AddressA64 tempAddrBuffer(IrOp bufferOp, IrOp indexOp);
 
     // May emit restore instructions
     RegisterA64 regOp(IrOp op);
@@ -61,17 +66,25 @@ struct IrLoweringA64
         Label next;
     };
 
+    struct ExitHandler
+    {
+        Label self;
+        unsigned int pcpos;
+    };
+
     AssemblyBuilderA64& build;
     ModuleHelpers& helpers;
-    NativeState& data;
 
     IrFunction& function;
+    LoweringStats* stats = nullptr;
 
     IrRegAllocA64 regs;
 
     IrValueLocationTracking valueTracker;
 
     std::vector<InterruptHandler> interruptHandlers;
+    std::vector<ExitHandler> exitHandlers;
+    DenseHashMap<uint32_t, uint32_t> exitHandlerMap;
 
     bool error = false;
 };

@@ -2,9 +2,13 @@
 #pragma once
 
 #include "Luau/Def.h"
+#include "Luau/LValue.h"
 #include "Luau/Location.h"
 #include "Luau/NotNull.h"
 #include "Luau/Type.h"
+#include "Luau/DenseHash.h"
+#include "Luau/Symbol.h"
+#include "Luau/Unifiable.h"
 
 #include <unordered_map>
 #include <optional>
@@ -52,7 +56,9 @@ struct Scope
     void addBuiltinTypeBinding(const Name& name, const TypeFun& tyFun);
 
     std::optional<TypeId> lookup(Symbol sym) const;
+    std::optional<TypeId> lookupUnrefinedType(DefId def) const;
     std::optional<TypeId> lookup(DefId def) const;
+    std::optional<std::pair<TypeId, Scope*>> lookupEx(DefId def);
     std::optional<std::pair<Binding*, Scope*>> lookupEx(Symbol sym);
 
     std::optional<TypeFun> lookupType(const Name& name) const;
@@ -65,7 +71,16 @@ struct Scope
     std::optional<Binding> linearSearchForBinding(const std::string& name, bool traverseScopeChain = true) const;
 
     RefinementMap refinements;
-    DenseHashMap<const Def*, TypeId> dcrRefinements{nullptr};
+
+    // This can be viewed as the "unrefined" type of each binding.
+    DenseHashMap<const Def*, TypeId> lvalueTypes{nullptr};
+
+    // Luau values are routinely refined more narrowly than their actual
+    // inferred type through control flow statements.  We retain those refined
+    // types here.
+    DenseHashMap<const Def*, TypeId> rvalueRefinements{nullptr};
+
+    void inheritAssignments(const ScopePtr& childScope);
     void inheritRefinements(const ScopePtr& childScope);
 
     // For mutually recursive type aliases, it's important that

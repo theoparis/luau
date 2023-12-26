@@ -113,6 +113,12 @@ def main():
         action="store_true",
         help="Run the tests with read-write properties enabled.",
     )
+    parser.add_argument(
+        "--ts",
+        dest="suite",
+        action="store",
+        help="Only run a specific suite."
+    )
 
     parser.add_argument("--randomize", action="store_true", help="Pick a random seed")
 
@@ -125,12 +131,6 @@ def main():
     )
 
     args = parser.parse_args()
-
-    if args.write and args.rwp:
-        print_stderr(
-            "Cannot run test_dcr.py with --write *and* --rwp. You don't want to commit local type inference faillist.txt yet."
-        )
-        sys.exit(1)
 
     failList = loadFailList()
 
@@ -145,12 +145,17 @@ def main():
     elif args.randomize:
         commandLine.append("--randomize")
 
+    if args.suite:
+        commandLine.append(f'--ts={args.suite}')
+
     print_stderr(">", " ".join(commandLine))
 
     p = sp.Popen(
         commandLine,
         stdout=sp.PIPE,
     )
+
+    assert p.stdout
 
     handler = Handler(failList)
 

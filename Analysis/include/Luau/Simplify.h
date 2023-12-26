@@ -2,21 +2,20 @@
 
 #pragma once
 
-#include "Luau/Type.h"
-
-#include <set>
+#include "Luau/DenseHash.h"
+#include "Luau/NotNull.h"
+#include "Luau/TypeFwd.h"
 
 namespace Luau
 {
 
 struct TypeArena;
-struct BuiltinTypes;
 
 struct SimplifyResult
 {
     TypeId result;
 
-    std::set<TypeId> blockedTypes;
+    DenseHashSet<TypeId> blockedTypes;
 };
 
 SimplifyResult simplifyIntersection(NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena, TypeId ty, TypeId discriminant);

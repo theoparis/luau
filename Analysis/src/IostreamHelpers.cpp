@@ -1,6 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/IostreamHelpers.h"
 #include "Luau/ToString.h"
+#include "Luau/TypePath.h"
 
 namespace Luau
 {
@@ -200,6 +201,12 @@ static void errorToString(std::ostream& stream, const T& err)
         stream << "WhereClauseNeeded { " << toString(err.ty) << " }";
     else if constexpr (std::is_same_v<T, PackWhereClauseNeeded>)
         stream << "PackWhereClauseNeeded { " << toString(err.tp) << " }";
+    else if constexpr (std::is_same_v<T, CheckedFunctionCallError>)
+        stream << "CheckedFunctionCallError { expected = '" << toString(err.expected) << "', passed = '" << toString(err.passed)
+               << "', checkedFunctionName = " << err.checkedFunctionName << ", argumentIndex = " << std::to_string(err.argumentIndex) << " }";
+    else if constexpr (std::is_same_v<T, NonStrictFunctionDefinitionError>)
+        stream << "NonStrictFunctionDefinitionError { functionName = '" + err.functionName + "', argument = '" + err.argument +
+                      "', argumentType = '" + toString(err.argumentType) + "' }";
     else
         static_assert(always_false_v<T>, "Non-exhaustive type switch");
 }
@@ -232,5 +239,35 @@ std::ostream& operator<<(std::ostream& stream, const TypePackVar& tv)
 {
     return stream << toString(tv);
 }
+
+std::ostream& operator<<(std::ostream& stream, TypeId ty)
+{
+    // we commonly use a null pointer when a type may not be present; we need to
+    // account for that here.
+    if (!ty)
+        return stream << "<nullptr>";
+
+    return stream << toString(ty);
+}
+
+std::ostream& operator<<(std::ostream& stream, TypePackId tp)
+{
+    // we commonly use a null pointer when a type may not be present; we need to
+    // account for that here.
+    if (!tp)
+        return stream << "<nullptr>";
+
+    return stream << toString(tp);
+}
+
+namespace TypePath
+{
+
+std::ostream& operator<<(std::ostream& stream, const Path& path)
+{
+    return stream << toString(path);
+}
+
+} // namespace TypePath
 
 } // namespace Luau

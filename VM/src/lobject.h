@@ -5,6 +5,8 @@
 #include "lua.h"
 #include "lcommon.h"
 
+LUAU_FASTFLAG(LuauTaggedLuData)
+
 /*
 ** Union of all collectible objects
 */
@@ -58,6 +60,7 @@ typedef struct lua_TValue
 #define ttisboolean(o) (ttype(o) == LUA_TBOOLEAN)
 #define ttisuserdata(o) (ttype(o) == LUA_TUSERDATA)
 #define ttisthread(o) (ttype(o) == LUA_TTHREAD)
+#define ttisbuffer(o) (ttype(o) == LUA_TBUFFER)
 #define ttislightuserdata(o) (ttype(o) == LUA_TLIGHTUSERDATA)
 #define ttisvector(o) (ttype(o) == LUA_TVECTOR)
 #define ttisupval(o) (ttype(o) == LUA_TUPVAL)
@@ -74,9 +77,15 @@ typedef struct lua_TValue
 #define hvalue(o) check_exp(ttistable(o), &(o)->value.gc->h)
 #define bvalue(o) check_exp(ttisboolean(o), (o)->value.b)
 #define thvalue(o) check_exp(ttisthread(o), &(o)->value.gc->th)
+#define bufvalue(o) check_exp(ttisbuffer(o), &(o)->value.gc->buf)
 #define upvalue(o) check_exp(ttisupval(o), &(o)->value.gc->uv)
 
 #define l_isfalse(o) (ttisnil(o) || (ttisboolean(o) && bvalue(o) == 0))
+
+#define lightuserdatatag(o) check_exp(ttislightuserdata(o), (o)->extra[0])
+
+// Internal tags used by the VM
+#define LU_TAG_ITERATOR LUA_UTAG_LIMIT
 
 /*
 ** for internal debug only
@@ -118,10 +127,11 @@ typedef struct lua_TValue
     }
 #endif
 
-#define setpvalue(obj, x) \
+#define setpvalue(obj, x, tag) \
     { \
         TValue* i_o = (obj); \
         i_o->value.p = (x); \
+        i_o->extra[0] = (tag); \
         i_o->tt = LUA_TLIGHTUSERDATA; \
     }
 
@@ -153,6 +163,14 @@ typedef struct lua_TValue
         TValue* i_o = (obj); \
         i_o->value.gc = cast_to(GCObject*, (x)); \
         i_o->tt = LUA_TTHREAD; \
+        checkliveness(L->global, i_o); \
+    }
+
+#define setbufvalue(L, obj, x) \
+    { \
+        TValue* i_o = (obj); \
+        i_o->value.gc = cast_to(GCObject*, (x)); \
+        i_o->tt = LUA_TBUFFER; \
         checkliveness(L->global, i_o); \
     }
 
@@ -254,6 +272,19 @@ typedef struct Udata
     };
 } Udata;
 
+typedef struct Buffer
+{
+    CommonHeader;
+
+    unsigned int len;
+
+    union
+    {
+        char data[1];      // buffer is allocated right after the header
+        L_Umaxalign dummy; // ensures maximum alignment for data
+    };
+} Buffer;
+
 /*
 ** Function Prototypes
 */
@@ -263,9 +294,22 @@ typedef struct Proto
     CommonHeader;
 
 
+    uint8_t nups; // number of upvalues
+    uint8_t numparams;
+    uint8_t is_vararg;
+    uint8_t maxstacksize;
+    uint8_t flags;
+
+
     TValue* k;              // constants used by the function
     Instruction* code;      // function bytecode
     struct Proto** p;       // functions defined inside the function
+    const Instruction* codeentry;
+
+    void* execdata;
+    uintptr_t exectarget;
+
+
     uint8_t* lineinfo;      // for each instruction, line number as a delta from baseline
     int* abslineinfo;       // baseline line info, one entry for each 1<<linegaplog2 instructions; allocated after lineinfo
     struct LocVar* locvars; // information about local variables
@@ -275,9 +319,9 @@ typedef struct Proto
     TString* debugname;
     uint8_t* debuginsn; // a copy of code[] array with just opcodes
 
-    const Instruction* codeentry;
-    void* execdata;
-    uintptr_t exectarget;
+    uint8_t* typeinfo;
+
+    void* userdata;
 
     GCObject* gclist;
 
@@ -291,12 +335,6 @@ typedef struct Proto
     int linegaplog2;
     int linedefined;
     int bytecodeid;
-
-
-    uint8_t nups; // number of upvalues
-    uint8_t numparams;
-    uint8_t is_vararg;
-    uint8_t maxstacksize;
 } Proto;
 // clang-format on
 

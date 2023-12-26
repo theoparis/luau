@@ -12,6 +12,10 @@
 
 using namespace Luau;
 
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
+LUAU_FASTFLAG(DebugLuauFreezeArena);
+LUAU_FASTFLAG(CorrectEarlyReturnInMarkDirty);
+
 namespace
 {
 
@@ -160,7 +164,10 @@ TEST_CASE_FIXTURE(FrontendFixture, "automatically_check_dependent_scripts")
     auto bExports = first(bModule->returnType);
     REQUIRE(!!bExports);
 
-    CHECK_EQ("{| b_value: number |}", toString(*bExports));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ b_value: number }", toString(*bExports));
+    else
+        CHECK_EQ("{| b_value: number |}", toString(*bExports));
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "automatically_check_cyclically_dependent_scripts")
@@ -302,7 +309,11 @@ TEST_CASE_FIXTURE(FrontendFixture, "nocheck_cycle_used_by_checked")
 
     std::optional<TypeId> cExports = first(cModule->returnType);
     REQUIRE(bool(cExports));
-    CHECK_EQ("{| a: any, b: any |}", toString(*cExports));
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ a: any, b: any }", toString(*cExports));
+    else
+        CHECK_EQ("{| a: any, b: any |}", toString(*cExports));
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "cycle_detection_disabled_in_nocheck")
@@ -444,6 +455,63 @@ TEST_CASE_FIXTURE(FrontendFixture, "cycle_incremental_type_surface_longer")
     CHECK_EQ(toString(tyB), "any");
 }
 
+TEST_CASE_FIXTURE(FrontendFixture, "cycle_incremental_type_surface_exports")
+{
+    fileResolver.source["game/A"] = R"(
+local b = require(game.B)
+export type atype = { x: b.btype }
+return {mod_a = 1}
+    )";
+
+    fileResolver.source["game/B"] = R"(
+export type btype = { x: number }
+
+local function bf()
+    local a = require(game.A)
+    local bfl : a.atype = nil
+    return {bfl.x}
+end
+return {mod_b = 2}
+    )";
+
+    ToStringOptions opts;
+    opts.exhaustive = true;
+
+    CheckResult resultA = frontend.check("game/A");
+    LUAU_REQUIRE_ERRORS(resultA);
+
+    CheckResult resultB = frontend.check("game/B");
+    LUAU_REQUIRE_ERRORS(resultB);
+
+    TypeId tyB = requireExportedType("game/B", "btype");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(tyB, opts), "{ x: number }");
+    else
+        CHECK_EQ(toString(tyB, opts), "{| x: number |}");
+
+    TypeId tyA = requireExportedType("game/A", "atype");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(tyA, opts), "{ x: any }");
+    else
+        CHECK_EQ(toString(tyA, opts), "{| x: any |}");
+
+    frontend.markDirty("game/B");
+    resultB = frontend.check("game/B");
+    LUAU_REQUIRE_ERRORS(resultB);
+
+    tyB = requireExportedType("game/B", "btype");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(tyB, opts), "{ x: number }");
+    else
+        CHECK_EQ(toString(tyB, opts), "{| x: number |}");
+
+    tyA = requireExportedType("game/A", "atype");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(tyA, opts), "{ x: any }");
+    else
+        CHECK_EQ(toString(tyA, opts), "{| x: any |}");
+}
+
 TEST_CASE_FIXTURE(FrontendFixture, "dont_reparse_clean_file_when_linting")
 {
     fileResolver.source["Modules/A"] = R"(
@@ -514,7 +582,10 @@ TEST_CASE_FIXTURE(FrontendFixture, "recheck_if_dependent_script_is_dirty")
     auto bExports = first(bModule->returnType);
     REQUIRE(!!bExports);
 
-    CHECK_EQ("{| b_value: string |}", toString(*bExports));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ b_value: string }", toString(*bExports));
+    else
+        CHECK_EQ("{| b_value: string |}", toString(*bExports));
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "mark_non_immediate_reverse_deps_as_dirty")
@@ -838,8 +909,12 @@ TEST_CASE_FIXTURE(FrontendFixture, "it_should_be_safe_to_stringify_errors_when_f
     // When this test fails, it is because the TypeIds needed by the error have been deallocated.
     // It is thus basically impossible to predict what will happen when this assert is evaluated.
     // It could segfault, or you could see weird type names like the empty string or <VALUELESS BY EXCEPTION>
-    REQUIRE_EQ(
-        "Table type 'a' not compatible with type '{| Count: number |}' because the former is missing field 'Count'", toString(result.errors[0]));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        REQUIRE_EQ(
+            "Table type 'a' not compatible with type '{ Count: number }' because the former is missing field 'Count'", toString(result.errors[0]));
+    else
+        REQUIRE_EQ(
+            "Table type 'a' not compatible with type '{| Count: number |}' because the former is missing field 'Count'", toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(FrontendFixture, "trace_requires_in_nonstrict_mode")
@@ -1039,7 +1114,7 @@ a:b() -- this should error, since A doesn't define a:b()
 TEST_CASE("no_use_after_free_with_type_fun_instantiation")
 {
     // This flag forces this test to crash if there's a UAF in this code.
-    ScopedFastFlag sff_DebugLuauFreezeArena("DebugLuauFreezeArena", true);
+    ScopedFastFlag sff_DebugLuauFreezeArena(FFlag::DebugLuauFreezeArena, true);
 
     FrontendFixture fix;
 
@@ -1144,6 +1219,61 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "module_scope_check")
 
     auto ty = requireType("game/A", "a");
     CHECK_EQ(toString(ty), "number");
+}
+
+TEST_CASE_FIXTURE(FrontendFixture, "parse_only")
+{
+    fileResolver.source["game/Gui/Modules/A"] = R"(
+        local a: number = 'oh no a type error'
+        return {a=a}
+    )";
+
+    fileResolver.source["game/Gui/Modules/B"] = R"(
+        local Modules = script.Parent
+        local A = require(Modules.A)
+        local b: number = 2
+    )";
+
+    frontend.parse("game/Gui/Modules/B");
+
+    REQUIRE(frontend.sourceNodes.count("game/Gui/Modules/A"));
+    REQUIRE(frontend.sourceNodes.count("game/Gui/Modules/B"));
+
+    auto node = frontend.sourceNodes["game/Gui/Modules/B"];
+    CHECK(node->requireSet.contains("game/Gui/Modules/A"));
+    REQUIRE_EQ(node->requireLocations.size(), 1);
+    CHECK_EQ(node->requireLocations[0].second, Luau::Location(Position(2, 18), Position(2, 36)));
+
+    // Early parse doesn't cause typechecking to be skipped
+    CheckResult result = frontend.check("game/Gui/Modules/B");
+    LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+    CHECK_EQ("game/Gui/Modules/A", result.errors[0].moduleName);
+    CHECK_EQ("Type 'string' could not be converted into 'number'", toString(result.errors[0]));
+}
+
+TEST_CASE_FIXTURE(FrontendFixture, "markdirty_early_return")
+{
+    ScopedFastFlag fflag(FFlag::CorrectEarlyReturnInMarkDirty, true);
+
+    constexpr char moduleName[] = "game/Gui/Modules/A";
+    fileResolver.source[moduleName] = R"(
+        return 1
+    )";
+
+    {
+        std::vector<ModuleName> markedDirty;
+        frontend.markDirty(moduleName, &markedDirty);
+        CHECK(markedDirty.empty());
+    }
+
+    frontend.parse(moduleName);
+
+    {
+        std::vector<ModuleName> markedDirty;
+        frontend.markDirty(moduleName, &markedDirty);
+        CHECK(!markedDirty.empty());
+    }
 }
 
 TEST_SUITE_END();

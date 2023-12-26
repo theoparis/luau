@@ -178,6 +178,9 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
         return 1;
     }
 
+    // we will allocate a fair amount of memory so check GC before we do
+    luaC_checkGC(L);
+
     // pause GC for the duration of deserialization - some objects we're creating aren't rooted
     // TODO: if an allocation error happens mid-load, we do not unpause GC!
     size_t GCthreshold = L->global->GCthreshold;
@@ -188,11 +191,11 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
 
     TString* source = luaS_new(L, chunkname);
 
+    uint8_t typesversion = 0;
 
     if (version >= 4)
     {
-        uint8_t typesversion = read<uint8_t>(data, size, offset);
-        LUAU_ASSERT(typesversion == 1);
+        typesversion = read<uint8_t>(data, size, offset);
     }
 
     // string table
@@ -224,12 +227,11 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
 
         if (version >= 4)
         {
-            uint8_t cgflags = read<uint8_t>(data, size, offset);
-            LUAU_ASSERT(cgflags == 0);
+            p->flags = read<uint8_t>(data, size, offset);
 
             uint32_t typesize = readVarInt(data, size, offset);
 
-            if (typesize)
+            if (typesize && typesversion == LBC_TYPE_VERSION)
             {
                 uint8_t* types = (uint8_t*)data + offset;
 
@@ -237,8 +239,11 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
                 LUAU_ASSERT(types[0] == LBC_TYPE_FUNCTION);
                 LUAU_ASSERT(types[1] == p->numparams);
 
-                offset += typesize;
+                p->typeinfo = luaM_newarray(L, typesize, uint8_t, p->memcat);
+                memcpy(p->typeinfo, types, typesize);
             }
+
+            offset += typesize;
         }
 
         p->sizecode = readVarInt(data, size, offset);
@@ -279,6 +284,17 @@ int luau_load(lua_State* L, const char* chunkname, const char* data, size_t size
             {
                 double v = read<double>(data, size, offset);
                 setnvalue(&p->k[j], v);
+                break;
+            }
+
+            case LBC_CONSTANT_VECTOR:
+            {
+                float x = read<float>(data, size, offset);
+                float y = read<float>(data, size, offset);
+                float z = read<float>(data, size, offset);
+                float w = read<float>(data, size, offset);
+                (void)w;
+                setvvalue(&p->k[j], x, y, z, w);
                 break;
             }
 

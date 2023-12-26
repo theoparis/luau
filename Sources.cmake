@@ -4,6 +4,7 @@ if(NOT ${CMAKE_VERSION} VERSION_LESS "3.19")
     target_sources(Luau.Common PRIVATE
         Common/include/Luau/Common.h
         Common/include/Luau/Bytecode.h
+        Common/include/Luau/BytecodeUtils.h
         Common/include/Luau/DenseHash.h
         Common/include/Luau/ExperimentalFlags.h
     )
@@ -55,6 +56,15 @@ target_sources(Luau.Compiler PRIVATE
     Compiler/src/ValueTracking.h
 )
 
+# Luau.Config Sources
+target_sources(Luau.Config PRIVATE
+    Config/include/Luau/Config.h
+    Config/include/Luau/LinterConfig.h
+
+    Config/src/Config.cpp
+    Config/src/LinterConfig.cpp
+)
+
 # Luau.CodeGen Sources
 target_sources(Luau.CodeGen PRIVATE
     CodeGen/include/Luau/AddressA64.h
@@ -72,6 +82,7 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/include/Luau/IrData.h
     CodeGen/include/Luau/IrRegAllocX64.h
     CodeGen/include/Luau/IrUtils.h
+    CodeGen/include/Luau/IrVisitUseDef.h
     CodeGen/include/Luau/Label.h
     CodeGen/include/Luau/OperandX64.h
     CodeGen/include/Luau/OptimizeConstProp.h
@@ -81,6 +92,8 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/include/Luau/UnwindBuilder.h
     CodeGen/include/Luau/UnwindBuilderDwarf2.h
     CodeGen/include/Luau/UnwindBuilderWin.h
+    CodeGen/include/Luau/BytecodeAnalysis.h
+    CodeGen/include/Luau/BytecodeSummary.h
     CodeGen/include/luacodegen.h
 
     CodeGen/src/AssemblyBuilderA64.cpp
@@ -88,6 +101,7 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/CodeAllocator.cpp
     CodeGen/src/CodeBlockUnwind.cpp
     CodeGen/src/CodeGen.cpp
+    CodeGen/src/CodeGenAssembly.cpp
     CodeGen/src/CodeGenUtils.cpp
     CodeGen/src/CodeGenA64.cpp
     CodeGen/src/CodeGenX64.cpp
@@ -112,9 +126,12 @@ target_sources(Luau.CodeGen PRIVATE
     CodeGen/src/OptimizeFinalX64.cpp
     CodeGen/src/UnwindBuilderDwarf2.cpp
     CodeGen/src/UnwindBuilderWin.cpp
+    CodeGen/src/BytecodeAnalysis.cpp
+    CodeGen/src/BytecodeSummary.cpp
 
     CodeGen/src/BitUtils.h
     CodeGen/src/ByteUtils.h
+    CodeGen/src/CodeGenLower.h
     CodeGen/src/CodeGenUtils.h
     CodeGen/src/CodeGenA64.h
     CodeGen/src/CodeGenX64.h
@@ -139,21 +156,22 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/AstJsonEncoder.h
     Analysis/include/Luau/AstQuery.h
     Analysis/include/Luau/Autocomplete.h
-    Analysis/include/Luau/Breadcrumb.h
     Analysis/include/Luau/BuiltinDefinitions.h
+    Analysis/include/Luau/Cancellation.h
     Analysis/include/Luau/Clone.h
-    Analysis/include/Luau/Config.h
     Analysis/include/Luau/Constraint.h
-    Analysis/include/Luau/ConstraintGraphBuilder.h
+    Analysis/include/Luau/ConstraintGenerator.h
     Analysis/include/Luau/ConstraintSolver.h
     Analysis/include/Luau/ControlFlow.h
     Analysis/include/Luau/DataFlowGraph.h
     Analysis/include/Luau/DcrLogger.h
     Analysis/include/Luau/Def.h
+    Analysis/include/Luau/Differ.h
     Analysis/include/Luau/Documentation.h
     Analysis/include/Luau/Error.h
     Analysis/include/Luau/FileResolver.h
     Analysis/include/Luau/Frontend.h
+    Analysis/include/Luau/GlobalTypes.h
     Analysis/include/Luau/InsertionOrderedMap.h
     Analysis/include/Luau/Instantiation.h
     Analysis/include/Luau/IostreamHelpers.h
@@ -163,6 +181,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/Metamethods.h
     Analysis/include/Luau/Module.h
     Analysis/include/Luau/ModuleResolver.h
+    Analysis/include/Luau/NonStrictTypeChecker.h
     Analysis/include/Luau/Normalize.h
     Analysis/include/Luau/Predicate.h
     Analysis/include/Luau/Quantify.h
@@ -170,8 +189,10 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/Refinement.h
     Analysis/include/Luau/RequireTracer.h
     Analysis/include/Luau/Scope.h
+    Analysis/include/Luau/Set.h
     Analysis/include/Luau/Simplify.h
     Analysis/include/Luau/Substitution.h
+    Analysis/include/Luau/Subtyping.h
     Analysis/include/Luau/Symbol.h
     Analysis/include/Luau/ToDot.h
     Analysis/include/Luau/TopoSortStatements.h
@@ -182,13 +203,19 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/include/Luau/TypeArena.h
     Analysis/include/Luau/TypeAttach.h
     Analysis/include/Luau/TypeChecker2.h
+    Analysis/include/Luau/TypeCheckLimits.h
     Analysis/include/Luau/TypedAllocator.h
     Analysis/include/Luau/TypeFamily.h
+    Analysis/include/Luau/TypeFwd.h
     Analysis/include/Luau/TypeInfer.h
+    Analysis/include/Luau/TypeOrPack.h
     Analysis/include/Luau/TypePack.h
+    Analysis/include/Luau/TypePairHash.h
+    Analysis/include/Luau/TypePath.h
     Analysis/include/Luau/TypeUtils.h
     Analysis/include/Luau/Unifiable.h
     Analysis/include/Luau/Unifier.h
+    Analysis/include/Luau/Unifier2.h
     Analysis/include/Luau/UnifierSharedState.h
     Analysis/include/Luau/Variant.h
     Analysis/include/Luau/VisitType.h
@@ -200,22 +227,24 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/Autocomplete.cpp
     Analysis/src/BuiltinDefinitions.cpp
     Analysis/src/Clone.cpp
-    Analysis/src/Config.cpp
     Analysis/src/Constraint.cpp
-    Analysis/src/ConstraintGraphBuilder.cpp
+    Analysis/src/ConstraintGenerator.cpp
     Analysis/src/ConstraintSolver.cpp
     Analysis/src/DataFlowGraph.cpp
     Analysis/src/DcrLogger.cpp
     Analysis/src/Def.cpp
+    Analysis/src/Differ.cpp
     Analysis/src/EmbeddedBuiltinDefinitions.cpp
     Analysis/src/Error.cpp
     Analysis/src/Frontend.cpp
+    Analysis/src/GlobalTypes.cpp
     Analysis/src/Instantiation.cpp
     Analysis/src/IostreamHelpers.cpp
     Analysis/src/JsonEmitter.cpp
     Analysis/src/Linter.cpp
     Analysis/src/LValue.cpp
     Analysis/src/Module.cpp
+    Analysis/src/NonStrictTypeChecker.cpp
     Analysis/src/Normalize.cpp
     Analysis/src/Quantify.cpp
     Analysis/src/Refinement.cpp
@@ -223,6 +252,7 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/Scope.cpp
     Analysis/src/Simplify.cpp
     Analysis/src/Substitution.cpp
+    Analysis/src/Subtyping.cpp
     Analysis/src/Symbol.cpp
     Analysis/src/ToDot.cpp
     Analysis/src/TopoSortStatements.cpp
@@ -236,10 +266,13 @@ target_sources(Luau.Analysis PRIVATE
     Analysis/src/TypedAllocator.cpp
     Analysis/src/TypeFamily.cpp
     Analysis/src/TypeInfer.cpp
+    Analysis/src/TypeOrPack.cpp
     Analysis/src/TypePack.cpp
+    Analysis/src/TypePath.cpp
     Analysis/src/TypeUtils.cpp
     Analysis/src/Unifiable.cpp
     Analysis/src/Unifier.cpp
+    Analysis/src/Unifier2.cpp
 )
 
 # Luau.VM Sources
@@ -252,6 +285,8 @@ target_sources(Luau.VM PRIVATE
     VM/src/laux.cpp
     VM/src/lbaselib.cpp
     VM/src/lbitlib.cpp
+    VM/src/lbuffer.cpp
+    VM/src/lbuflib.cpp
     VM/src/lbuiltins.cpp
     VM/src/lcorolib.cpp
     VM/src/ldblib.cpp
@@ -280,6 +315,7 @@ target_sources(Luau.VM PRIVATE
     VM/src/lvmutils.cpp
 
     VM/src/lapi.h
+    VM/src/lbuffer.h
     VM/src/lbuiltins.h
     VM/src/lbytecode.h
     VM/src/lcommon.h
@@ -315,7 +351,8 @@ if(TARGET Luau.Repl.CLI)
         CLI/Profiler.h
         CLI/Profiler.cpp
         CLI/Repl.cpp
-        CLI/ReplEntry.cpp)
+        CLI/ReplEntry.cpp
+        CLI/Require.cpp)
 endif()
 
 if(TARGET Luau.Analyze.CLI)
@@ -340,32 +377,35 @@ endif()
 if(TARGET Luau.UnitTest)
     # Luau.UnitTest Sources
     target_sources(Luau.UnitTest PRIVATE
-        tests/AstQueryDsl.cpp
-        tests/AstQueryDsl.h
-        tests/ClassFixture.cpp
-        tests/ClassFixture.h
-        tests/ConstraintGraphBuilderFixture.cpp
-        tests/ConstraintGraphBuilderFixture.h
-        tests/Fixture.cpp
-        tests/Fixture.h
-        tests/IostreamOptional.h
-        tests/ScopedFlags.h
         tests/AssemblyBuilderA64.test.cpp
         tests/AssemblyBuilderX64.test.cpp
         tests/AstJsonEncoder.test.cpp
         tests/AstQuery.test.cpp
+        tests/AstQueryDsl.cpp
+        tests/AstQueryDsl.h
         tests/AstVisitor.test.cpp
         tests/Autocomplete.test.cpp
         tests/BuiltinDefinitions.test.cpp
+        tests/ClassFixture.cpp
+        tests/ClassFixture.h
         tests/CodeAllocator.test.cpp
         tests/Compiler.test.cpp
         tests/Config.test.cpp
+        tests/ConstraintGeneratorFixture.cpp
+        tests/ConstraintGeneratorFixture.h
         tests/ConstraintSolver.test.cpp
         tests/CostModel.test.cpp
         tests/DataFlowGraph.test.cpp
         tests/DenseHash.test.cpp
+        tests/DiffAsserts.cpp
+        tests/DiffAsserts.h
+        tests/Differ.test.cpp
         tests/Error.test.cpp
+        tests/Fixture.cpp
+        tests/Fixture.h
         tests/Frontend.test.cpp
+        tests/InsertionOrderedMap.test.cpp
+        tests/IostreamOptional.h
         tests/IrBuilder.test.cpp
         tests/IrCallWrapperX64.test.cpp
         tests/IrRegAllocX64.test.cpp
@@ -375,13 +415,19 @@ if(TARGET Luau.UnitTest)
         tests/LValue.test.cpp
         tests/Module.test.cpp
         tests/NonstrictMode.test.cpp
+        tests/NonStrictTypeChecker.test.cpp
         tests/Normalize.test.cpp
         tests/NotNull.test.cpp
         tests/Parser.test.cpp
+        tests/RegisterCallbacks.cpp
+        tests/RegisterCallbacks.h
         tests/RequireTracer.test.cpp
         tests/RuntimeLimits.test.cpp
+        tests/ScopedFlags.h
         tests/Simplify.test.cpp
+        tests/Set.test.cpp
         tests/StringUtils.test.cpp
+        tests/Subtyping.test.cpp
         tests/Symbol.test.cpp
         tests/ToDot.test.cpp
         tests/TopoSort.test.cpp
@@ -412,20 +458,24 @@ if(TARGET Luau.UnitTest)
         tests/TypeInfer.tables.test.cpp
         tests/TypeInfer.test.cpp
         tests/TypeInfer.tryUnify.test.cpp
-        tests/TypeInfer.typePacks.cpp
+        tests/TypeInfer.typePacks.test.cpp
+        tests/TypeInfer.typestates.test.cpp
         tests/TypeInfer.unionTypes.test.cpp
         tests/TypeInfer.unknownnever.test.cpp
         tests/TypePack.test.cpp
+        tests/TypePath.test.cpp
         tests/TypeVar.test.cpp
+        tests/Unifier2.test.cpp
         tests/Variant.test.cpp
         tests/VisitType.test.cpp
-        tests/InsertionOrderedMap.test.cpp
         tests/main.cpp)
 endif()
 
 if(TARGET Luau.Conformance)
     # Luau.Conformance Sources
     target_sources(Luau.Conformance PRIVATE
+        tests/RegisterCallbacks.h
+        tests/RegisterCallbacks.cpp
         tests/Conformance.test.cpp
         tests/main.cpp)
 endif()
@@ -442,8 +492,12 @@ if(TARGET Luau.CLI.Test)
         CLI/Profiler.h
         CLI/Profiler.cpp
         CLI/Repl.cpp
+        CLI/Require.cpp
 
+        tests/RegisterCallbacks.h
+        tests/RegisterCallbacks.cpp
         tests/Repl.test.cpp
+        tests/RequireByString.test.cpp
         tests/main.cpp)
 endif()
 
@@ -470,4 +524,14 @@ if(TARGET Luau.Compile.CLI)
         CLI/Flags.h
         CLI/Flags.cpp
         CLI/Compile.cpp)
+endif()
+
+if(TARGET Luau.Bytecode.CLI)
+    # Luau.Bytecode.CLI Sources
+    target_sources(Luau.Bytecode.CLI PRIVATE
+        CLI/FileUtils.h
+        CLI/FileUtils.cpp
+        CLI/Flags.h
+        CLI/Flags.cpp
+        CLI/Bytecode.cpp)
 endif()

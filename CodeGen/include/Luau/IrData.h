@@ -1,6 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
+#include "Luau/Bytecode.h"
 #include "Luau/IrAnalysis.h"
 #include "Luau/Label.h"
 #include "Luau/RegisterX64.h"
@@ -11,6 +12,8 @@
 
 #include <stdint.h>
 #include <string.h>
+
+LUAU_FASTFLAG(LuauKeepVmapLinear2)
 
 struct Proto;
 
@@ -53,11 +56,8 @@ enum class IrCmd : uint8_t
 
     // Load a TValue from memory
     // A: Rn or Kn or pointer (TValue)
+    // B: int (optional 'A' pointer offset)
     LOAD_TVALUE,
-
-    // Load a TValue from table node value
-    // A: pointer (LuaNode)
-    LOAD_NODE_VALUE_TV, // TODO: we should find a way to generalize LOAD_TVALUE
 
     // Load current environment table
     LOAD_ENV,
@@ -70,12 +70,19 @@ enum class IrCmd : uint8_t
     // Get pointer (LuaNode) to table node element at the active cached slot index
     // A: pointer (Table)
     // B: unsigned int (pcpos)
+    // C: Kn
     GET_SLOT_NODE_ADDR,
 
     // Get pointer (LuaNode) to table node element at the main position of the specified key hash
     // A: pointer (Table)
     // B: unsigned int (hash)
     GET_HASH_NODE_ADDR,
+
+    // Get pointer (TValue) to Closure upvalue.
+    // A: pointer or undef (Closure)
+    // B: UPn
+    // When undef is specified, uses current function Closure.
+    GET_CLOSURE_UPVAL_ADDR,
 
     // Store a tag into TValue
     // A: Rn
@@ -107,12 +114,15 @@ enum class IrCmd : uint8_t
     // Store a TValue into memory
     // A: Rn or pointer (TValue)
     // B: TValue
+    // C: int (optional 'A' pointer offset)
     STORE_TVALUE,
 
-    // Store a TValue into table node value
-    // A: pointer (LuaNode)
-    // B: TValue
-    STORE_NODE_VALUE_TV, // TODO: we should find a way to generalize STORE_TVALUE
+    // Store a pair of tag and value into memory
+    // A: Rn or pointer (TValue)
+    // B: tag (must be a constant)
+    // C: int/double/pointer
+    // D: int (optional 'A' pointer offset)
+    STORE_SPLIT_TVALUE,
 
     // Add/Sub two integers together
     // A, B: int
@@ -126,6 +136,7 @@ enum class IrCmd : uint8_t
     SUB_NUM,
     MUL_NUM,
     DIV_NUM,
+    IDIV_NUM,
     MOD_NUM,
 
     // Get the minimum/maximum of two numbers
@@ -162,10 +173,15 @@ enum class IrCmd : uint8_t
     // Compute Luau 'not' operation on destructured TValue
     // A: tag
     // B: int (value)
-    NOT_ANY, // TODO: boolean specialization will be useful
+    NOT_ANY,
+
+    // Perform a TValue comparison, supported conditions are LessEqual, Less and Equal
+    // A, B: Rn
+    // C: condition
+    CMP_ANY,
 
     // Unconditional jump
-    // A: block
+    // A: block/vmexit/undef
     JUMP,
 
     // Jump if TValue is truthy
@@ -186,24 +202,12 @@ enum class IrCmd : uint8_t
     // D: block (if false)
     JUMP_EQ_TAG,
 
-    // Jump if two int numbers are equal
-    // A, B: int
-    // C: block (if true)
-    // D: block (if false)
-    JUMP_EQ_INT,
-
-    // Jump if A < B
-    // A, B: int
-    // C: block (if true)
-    // D: block (if false)
-    JUMP_LT_INT,
-
-    // Jump if unsigned(A) >= unsigned(B)
+    // Perform a conditional jump based on the result of integer comparison
     // A, B: int
     // C: condition
     // D: block (if true)
     // E: block (if false)
-    JUMP_GE_UINT,
+    JUMP_CMP_INT,
 
     // Jump if pointers are equal
     // A, B: pointer (*)
@@ -218,12 +222,13 @@ enum class IrCmd : uint8_t
     // E: block (if false)
     JUMP_CMP_NUM,
 
-    // Perform a conditional jump based on the result of TValue comparison
-    // A, B: Rn
-    // C: condition
+    // Perform jump based on a numerical loop condition (step > 0 ? idx <= limit : limit <= idx)
+    // A: double (index)
+    // B: double (limit)
+    // C: double (step)
     // D: block (if true)
     // E: block (if false)
-    JUMP_CMP_ANY,
+    JUMP_FORN_LOOP_COND,
 
     // Perform a conditional jump based on cached table node slot matching the actual table node slot for a key
     // A: pointer (LuaNode)
@@ -236,14 +241,23 @@ enum class IrCmd : uint8_t
     // A: pointer (Table)
     TABLE_LEN,
 
+    // Get string length
+    // A: pointer (string)
+    STRING_LEN,
+
     // Allocate new table
-    // A: int (array element count)
-    // B: int (node element count)
+    // A: unsigned int (array element count)
+    // B: unsigned int (node element count)
     NEW_TABLE,
 
     // Duplicate a table
     // A: pointer (Table)
     DUP_TABLE,
+
+    // Insert an integer key into a table and return the pointer to inserted value (TValue)
+    // A: pointer (Table)
+    // B: int (key)
+    TABLE_SETNUM,
 
     // Try to convert a double number into a table index (int) or jump if it's not an integer
     // A: double
@@ -270,7 +284,7 @@ enum class IrCmd : uint8_t
     NUM_TO_UINT,
 
     // Adjust stack top (L->top) to point at 'B' TValues *after* the specified register
-    // This is used to return muliple values
+    // This is used to return multiple values
     // A: Rn
     // B: int (offset)
     ADJUST_STACK_TO_REG,
@@ -348,44 +362,45 @@ enum class IrCmd : uint8_t
     // Store TValue from stack slot into a function upvalue
     // A: UPn
     // B: Rn
+    // C: tag/undef (tag of the value that was written)
     SET_UPVALUE,
-
-    // Convert TValues into numbers for a numerical for loop
-    // A: Rn (start)
-    // B: Rn (end)
-    // C: Rn (step)
-    PREPARE_FORN,
 
     // Guards and checks (these instructions are not block terminators even though they jump to fallback)
 
     // Guard against tag mismatch
     // A, B: tag
-    // C: block/undef
+    // C: block/vmexit/undef
     // In final x64 lowering, A can also be Rn
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_TAG,
 
+    // Guard against a falsy tag+value
+    // A: tag
+    // B: value
+    // C: block/vmexit/undef
+    CHECK_TRUTHY,
+
     // Guard against readonly table
     // A: pointer (Table)
-    // B: block/undef
+    // B: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_READONLY,
 
     // Guard against table having a metatable
     // A: pointer (Table)
-    // B: block/undef
+    // B: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_NO_METATABLE,
 
-    // Guard against executing in unsafe environment
-    // A: block/undef
-    // When undef is specified instead of a block, execution is aborted on check failure
+    // Guard against executing in unsafe environment, exits to VM on check failure
+    // A: vmexit/vmexit/undef
+    // When undef is specified, execution is aborted on check failure
     CHECK_SAFE_ENV,
 
     // Guard against index overflowing the table array size
     // A: pointer (Table)
     // B: int (index)
-    // C: block/undef
+    // C: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_ARRAY_SIZE,
 
@@ -398,9 +413,23 @@ enum class IrCmd : uint8_t
 
     // Guard against table node with a linked next node to ensure that our lookup hits the main position of the key
     // A: pointer (LuaNode)
-    // B: block/undef
+    // B: block/vmexit/undef
     // When undef is specified instead of a block, execution is aborted on check failure
     CHECK_NODE_NO_NEXT,
+
+    // Guard against table node with 'nil' value
+    // A: pointer (LuaNode)
+    // B: block/vmexit/undef
+    // When undef is specified instead of a block, execution is aborted on check failure
+    CHECK_NODE_VALUE,
+
+    // Guard against access at specified offset/size overflowing the buffer length
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (size)
+    // D: block/vmexit/undef
+    // When undef is specified instead of a block, execution is aborted on check failure
+    CHECK_BUFFER_LEN,
 
     // Special operations
 
@@ -414,6 +443,7 @@ enum class IrCmd : uint8_t
     // Handle GC write barrier (forward)
     // A: pointer (GCObject)
     // B: Rn (TValue that was written to the object)
+    // C: tag/undef (tag of the value that was written)
     BARRIER_OBJ,
 
     // Handle GC write barrier (backwards) for a write into a table
@@ -423,6 +453,7 @@ enum class IrCmd : uint8_t
     // Handle GC write barrier (forward) for a write into a table
     // A: pointer (Table)
     // B: Rn (TValue that was written to the object)
+    // C: tag/undef (tag of the value that was written)
     BARRIER_TABLE_FORWARD,
 
     // Update savedpc value
@@ -446,6 +477,7 @@ enum class IrCmd : uint8_t
     // C: Rn (source start)
     // D: int (count or -1 to assign values up to stack top)
     // E: unsigned int (table index to start from)
+    // F: undef/unsigned int (target table known size)
     SETLIST,
 
     // Call specified function
@@ -534,10 +566,10 @@ enum class IrCmd : uint8_t
     FALLBACK_GETVARARGS,
 
     // Create closure from a child proto
-    // A: unsigned int (bytecode instruction index)
-    // B: Rn (dest)
+    // A: unsigned int (nups)
+    // B: pointer (table)
     // C: unsigned int (protoid)
-    FALLBACK_NEWCLOSURE,
+    NEWCLOSURE,
 
     // Create closure from a pre-created function object (reusing it unless environments diverge)
     // A: unsigned int (bytecode instruction index)
@@ -579,11 +611,92 @@ enum class IrCmd : uint8_t
     BITCOUNTLZ_UINT,
     BITCOUNTRZ_UINT,
 
+    // Swap byte order in A
+    // A: int
+    BYTESWAP_UINT,
+
     // Calls native libm function with 1 or 2 arguments
     // A: builtin function ID
     // B: double
     // C: double/int (optional, 2nd argument)
     INVOKE_LIBM,
+
+    // Returns the string name of a type based on tag, alternative for type(x)
+    // A: tag
+    GET_TYPE,
+
+    // Returns the string name of a type either from a __type metatable field or just based on the tag, alternative for typeof(x)
+    // A: Rn
+    GET_TYPEOF,
+
+    // Find or create an upval at the given level
+    // A: Rn (level)
+    FINDUPVAL,
+
+    // Read i8 (sign-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READI8,
+
+    // Read u8 (zero-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READU8,
+
+    // Write i8/u8 value (int argument is truncated) to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (value)
+    BUFFER_WRITEI8,
+
+    // Read i16 (sign-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READI16,
+
+    // Read u16 (zero-extended to int) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READU16,
+
+    // Write i16/u16 value (int argument is truncated) to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (value)
+    BUFFER_WRITEI16,
+
+    // Read i32 value from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READI32,
+
+    // Write i32/u32 value to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: int (value)
+    BUFFER_WRITEI32,
+
+    // Read float value (converted to double) from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READF32,
+
+    // Write float value (converted from double) to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: double (value)
+    BUFFER_WRITEF32,
+
+    // Read double value from buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    BUFFER_READF64,
+
+    // Write double value to buffer storage at specified offset
+    // A: pointer (buffer)
+    // B: int (offset)
+    // C: double (value)
+    BUFFER_WRITEF64,
 };
 
 enum class IrConstKind : uint8_t
@@ -600,7 +713,6 @@ struct IrConst
 
     union
     {
-        bool valueBool;
         int valueInt;
         unsigned valueUint;
         double valueDouble;
@@ -655,7 +767,14 @@ enum class IrOpKind : uint32_t
 
     // To reference a VM upvalue
     VmUpvalue,
+
+    // To reference an exit to VM at specific PC pos
+    VmExit,
 };
+
+// VmExit uses a special value to indicate that pcpos update should be skipped
+// This is only used during type checking at function entry
+constexpr uint32_t kVmExitEntryGuardPc = (1u << 28) - 1;
 
 struct IrOp
 {
@@ -802,6 +921,8 @@ struct IrBlock
     uint32_t finish = ~0u;
 
     uint32_t sortkey = ~0u;
+    uint32_t chainkey = 0;
+    uint32_t expectedNextBlock = ~0u;
 
     Label label;
 };
@@ -812,16 +933,37 @@ struct BytecodeMapping
     uint32_t asmLocation;
 };
 
+struct BytecodeBlock
+{
+    // 'start' and 'finish' define an inclusive range of instructions which belong to the block
+    int startpc = -1;
+    int finishpc = -1;
+};
+
+struct BytecodeTypes
+{
+    uint8_t result = LBC_TYPE_ANY;
+    uint8_t a = LBC_TYPE_ANY;
+    uint8_t b = LBC_TYPE_ANY;
+    uint8_t c = LBC_TYPE_ANY;
+};
+
 struct IrFunction
 {
     std::vector<IrBlock> blocks;
     std::vector<IrInst> instructions;
     std::vector<IrConst> constants;
 
+    std::vector<BytecodeBlock> bcBlocks;
+    std::vector<BytecodeTypes> bcTypes;
+
     std::vector<BytecodeMapping> bcMapping;
+    uint32_t entryBlock = 0;
+    uint32_t entryLocation = 0;
 
     // For each instruction, an operand that can be used to recompute the value
     std::vector<IrOp> valueRestoreOps;
+    std::vector<uint32_t> validRestoreOpBlocks;
     uint32_t validRestoreOpBlockIdx = 0;
 
     Proto* proto = nullptr;
@@ -961,23 +1103,57 @@ struct IrFunction
         valueRestoreOps[instIdx] = location;
     }
 
-    IrOp findRestoreOp(uint32_t instIdx) const
+    IrOp findRestoreOp(uint32_t instIdx, bool limitToCurrentBlock) const
     {
         if (instIdx >= valueRestoreOps.size())
             return {};
 
-        const IrBlock& block = blocks[validRestoreOpBlockIdx];
+        if (FFlag::LuauKeepVmapLinear2)
+        {
+            // When spilled, values can only reference restore operands in the current block chain
+            if (limitToCurrentBlock)
+            {
+                for (uint32_t blockIdx : validRestoreOpBlocks)
+                {
+                    const IrBlock& block = blocks[blockIdx];
 
-        // Values can only reference restore operands in the current block
-        if (instIdx < block.start || instIdx > block.finish)
-            return {};
+                    if (instIdx >= block.start && instIdx <= block.finish)
+                        return valueRestoreOps[instIdx];
+                }
 
-        return valueRestoreOps[instIdx];
+                return {};
+            }
+
+            return valueRestoreOps[instIdx];
+        }
+        else
+        {
+            const IrBlock& block = blocks[validRestoreOpBlockIdx];
+
+            // When spilled, values can only reference restore operands in the current block
+            if (limitToCurrentBlock)
+            {
+                if (instIdx < block.start || instIdx > block.finish)
+                    return {};
+            }
+
+            return valueRestoreOps[instIdx];
+        }
     }
 
-    IrOp findRestoreOp(const IrInst& inst) const
+    IrOp findRestoreOp(const IrInst& inst, bool limitToCurrentBlock) const
     {
-        return findRestoreOp(getInstIndex(inst));
+        return findRestoreOp(getInstIndex(inst), limitToCurrentBlock);
+    }
+
+    BytecodeTypes getBytecodeTypesAt(int pcpos) const
+    {
+        LUAU_ASSERT(pcpos >= 0);
+
+        if (size_t(pcpos) < bcTypes.size())
+            return bcTypes[pcpos];
+
+        return BytecodeTypes();
     }
 };
 
@@ -1002,6 +1178,12 @@ inline int vmConstOp(IrOp op)
 inline int vmUpvalueOp(IrOp op)
 {
     LUAU_ASSERT(op.kind == IrOpKind::VmUpvalue);
+    return op.index;
+}
+
+inline uint32_t vmExitOp(IrOp op)
+{
+    LUAU_ASSERT(op.kind == IrOpKind::VmExit);
     return op.index;
 }
 

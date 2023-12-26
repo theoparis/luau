@@ -9,8 +9,6 @@
 #include "Luau/VisitType.h"
 
 LUAU_FASTFLAG(DebugLuauSharedSelf)
-LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
-LUAU_FASTFLAG(LuauClassTypeVarsInSubstitution)
 
 namespace Luau
 {
@@ -244,7 +242,7 @@ struct PureQuantifier : Substitution
 
     bool ignoreChildren(TypeId ty) override
     {
-        if (FFlag::LuauClassTypeVarsInSubstitution && get<ClassType>(ty))
+        if (get<ClassType>(ty))
             return true;
 
         return ty->persistent;

@@ -61,6 +61,7 @@ assert(1111111111111111-1111111111111110== 1000.00e-03)
 --     1234567890123456
 assert(1.1 == '1.'+'.1')
 assert('1111111111111111'-'1111111111111110' == tonumber"  +0.001e+3 \n\t")
+assert(10000000000000001 == 10000000000000000)
 
 function eq (a,b,limit)
   if not limit then limit = 10E-10 end
@@ -82,6 +83,7 @@ assert(not(1>1) and not(1>2) and (2>1))
 assert(not('a'>'a') and not('a'>'b') and ('b'>'a'))
 assert((1>=1) and not(1>=2) and (2>=1))
 assert(('a'>='a') and not('a'>='b') and ('b'>='a'))
+assert((unk and unk > 0) == nil) -- validate precedence between and and >
 
 -- testing mod operator
 assert(-4%3 == 2)
@@ -188,6 +190,26 @@ do   -- testing NaN
   assert(a[NaN] == nil)
 end
 
+-- extra NaN tests, hidden in a function
+do
+  function neq(a) return a ~= a end
+  function eq(a) return a == a end
+  function lt(a) return a < a end
+  function le(a) return a <= a end
+  function gt(a) return a > a end
+  function ge(a) return a >= a end
+
+  local NaN -- to avoid constant folding
+  NaN = 10e500 - 10e400
+
+  assert(neq(NaN))
+  assert(not eq(NaN))
+  assert(not lt(NaN))
+  assert(not le(NaN))
+  assert(not gt(NaN))
+  assert(not ge(NaN))
+end
+
 -- require "checktable"
 -- stat(a)
 
@@ -235,6 +257,12 @@ assert(flag);
 
 assert(select(2, pcall(math.random, 1, 2, 3)):match("wrong number of arguments"))
 
+-- argument count
+function nothing() end
+
+assert(pcall(math.abs) == false)
+assert(pcall(function() return math.abs(nothing()) end) == false)
+
 -- min/max
 assert(math.min(1) == 1)
 assert(math.min(1, 2) == 1)
@@ -249,6 +277,7 @@ assert(math.max(1, -1, 2) == 2)
 assert(math.noise(0.5) == 0)
 assert(math.noise(0.5, 0.5) == -0.25)
 assert(math.noise(0.5, 0.5, -0.5) == 0.125)
+assert(math.noise(455.7204209769105, 340.80410508750134, 121.80087666537628) == 0.5010709762573242)
 
 local inf = math.huge * 2
 local nan = 0 / 0
@@ -318,7 +347,7 @@ assert(math.log10("10") == 1)
 assert(math.log("0") == -inf)
 assert(math.log("8", 2) == 3)
 assert(math.log("10", 10) == 1)
-assert(math.log("9", 3) == 2)
+assert(math.log("16", 4) == 2)
 assert(math.max("1", 2) == 2)
 assert(math.max(2, "1") == 2)
 assert(math.max(1, 2, "3") == 3)

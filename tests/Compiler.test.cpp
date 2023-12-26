@@ -15,14 +15,28 @@ namespace Luau
 std::string rep(const std::string& s, size_t n);
 }
 
+LUAU_FASTFLAG(LuauVectorLiterals)
+LUAU_FASTFLAG(LuauCompileRevK)
+LUAU_FASTINT(LuauCompileInlineDepth)
+LUAU_FASTINT(LuauCompileInlineThreshold)
+LUAU_FASTINT(LuauCompileInlineThresholdMaxBoost)
+LUAU_FASTINT(LuauCompileLoopUnrollThreshold)
+LUAU_FASTINT(LuauCompileLoopUnrollThresholdMaxBoost)
+LUAU_FASTINT(LuauRecursionLimit)
+
 using namespace Luau;
 
-static std::string compileFunction(const char* source, uint32_t id, int optimizationLevel = 1)
+static std::string compileFunction(const char* source, uint32_t id, int optimizationLevel = 1, bool enableVectors = false)
 {
     Luau::BytecodeBuilder bcb;
     bcb.setDumpFlags(Luau::BytecodeBuilder::Dump_Code);
     Luau::CompileOptions options;
     options.optimizationLevel = optimizationLevel;
+    if (enableVectors)
+    {
+        options.vectorLib = "Vector3";
+        options.vectorCtor = "new";
+    }
     Luau::compileOrThrow(bcb, source, options);
 
     return bcb.dumpFunction(id);
@@ -49,16 +63,48 @@ static std::string compileFunction0Coverage(const char* source, int level)
     return bcb.dumpFunction(0);
 }
 
-static std::string compileFunction0TypeTable(const char* source)
+static std::string compileTypeTable(const char* source)
 {
     Luau::BytecodeBuilder bcb;
     bcb.setDumpFlags(Luau::BytecodeBuilder::Dump_Code);
-    Luau::compileOrThrow(bcb, source);
+
+    Luau::CompileOptions opts;
+    opts.vectorType = "Vector3";
+    Luau::compileOrThrow(bcb, source, opts);
 
     return bcb.dumpTypeInfo();
 }
 
 TEST_SUITE_BEGIN("Compiler");
+
+TEST_CASE("BytecodeIsStable")
+{
+    // As noted in Bytecode.h, all enums used for bytecode storage and serialization are order-sensitive
+    // Adding entries in the middle will typically pass the tests but break compatibility
+    // This test codifies this by validating that in each enum, the last (or close-to-last) entry has a fixed encoding
+
+    // This test will need to get occasionally revised to "move" the checked enum entries forward as we ship newer versions
+    // When doing so, please add *new* checks for more recent bytecode versions and keep existing checks in place.
+
+    // Bytecode ops (serialized & in-memory)
+    CHECK(LOP_FASTCALL2K == 75); // bytecode v1
+    CHECK(LOP_JUMPXEQKS == 80);  // bytecode v3
+
+    // Bytecode fastcall ids (serialized & in-memory)
+    // Note: these aren't strictly bound to specific bytecode versions, but must monotonically increase to keep backwards compat
+    CHECK(LBF_VECTOR == 54);
+    CHECK(LBF_TOSTRING == 63);
+
+    // Bytecode capture type (serialized & in-memory)
+    CHECK(LCT_UPVAL == 2); // bytecode v1
+
+    // Bytecode constants (serialized)
+    CHECK(LBC_CONSTANT_CLOSURE == 6); // bytecode v1
+
+    // Bytecode type encoding (serialized & in-memory)
+    // Note: these *can* change retroactively *if* type version is bumped, but probably shouldn't
+    LUAU_ASSERT(LBC_TYPE_BUFFER == 9); // type version 1
+}
 
 TEST_CASE("CompileToBytecode")
 {
@@ -1110,38 +1156,34 @@ L0: RETURN R1 1
 TEST_CASE("AndOrFoldLeft")
 {
     // constant folding and/or expression is possible even if just the left hand is constant
-    CHECK_EQ("\n" + compileFunction0("local a = false if a and b then b() end"), R"(
-RETURN R0 0
+    CHECK_EQ("\n" + compileFunction0("local a = false return a and b"), R"(
+LOADB R0 0
+RETURN R0 1
 )");
 
-    CHECK_EQ("\n" + compileFunction0("local a = true if a or b then b() end"), R"(
-GETIMPORT R0 1 [b]
-CALL R0 0 0
-RETURN R0 0
+    CHECK_EQ("\n" + compileFunction0("local a = true return a or b"), R"(
+LOADB R0 1
+RETURN R0 1
 )");
 
-    // however, if right hand side is constant we can't constant fold the entire expression
-    // (note that we don't need to evaluate the right hand side, but we do need a branch)
-    CHECK_EQ("\n" + compileFunction0("local a = false if b and a then b() end"), R"(
-GETIMPORT R0 1 [b]
-JUMPIFNOT R0 L0
-RETURN R0 0
-GETIMPORT R0 1 [b]
-CALL R0 0 0
-L0: RETURN R0 0
+    // if right hand side is constant we can't constant fold the entire expression
+    CHECK_EQ("\n" + compileFunction0("local a = false return b and a"), R"(
+GETIMPORT R1 2 [b]
+ANDK R0 R1 K0 [false]
+RETURN R0 1
 )");
 
-    CHECK_EQ("\n" + compileFunction0("local a = true if b or a then b() end"), R"(
-GETIMPORT R0 1 [b]
-JUMPIF R0 L0
-L0: GETIMPORT R0 1 [b]
-CALL R0 0 0
-RETURN R0 0
+    CHECK_EQ("\n" + compileFunction0("local a = true return b or a"), R"(
+GETIMPORT R1 2 [b]
+ORK R0 R1 K0 [true]
+RETURN R0 1
 )");
 }
 
 TEST_CASE("AndOrChainCodegen")
 {
+    ScopedFastFlag sff(FFlag::LuauCompileRevK, true);
+
     const char* source = R"(
     return
         (1 - verticalGradientTurbulence < waterLevel + .015 and Enum.Material.Sand)
@@ -1150,23 +1192,22 @@ TEST_CASE("AndOrChainCodegen")
     )";
 
     CHECK_EQ("\n" + compileFunction0(source), R"(
-LOADN R2 1
-GETIMPORT R3 1 [verticalGradientTurbulence]
-SUB R1 R2 R3
-GETIMPORT R3 4 [waterLevel]
-ADDK R2 R3 K2 [0.014999999999999999]
+GETIMPORT R2 2 [verticalGradientTurbulence]
+SUBRK R1 K0 [1] R2
+GETIMPORT R3 5 [waterLevel]
+ADDK R2 R3 K3 [0.014999999999999999]
 JUMPIFNOTLT R1 R2 L0
-GETIMPORT R0 8 [Enum.Material.Sand]
+GETIMPORT R0 9 [Enum.Material.Sand]
 JUMPIF R0 L2
-L0: GETIMPORT R1 10 [sandbank]
+L0: GETIMPORT R1 11 [sandbank]
 LOADN R2 0
 JUMPIFNOTLT R2 R1 L1
-GETIMPORT R1 10 [sandbank]
+GETIMPORT R1 11 [sandbank]
 LOADN R2 1
 JUMPIFNOTLT R1 R2 L1
-GETIMPORT R0 8 [Enum.Material.Sand]
+GETIMPORT R0 9 [Enum.Material.Sand]
 JUMPIF R0 L2
-L1: GETIMPORT R0 12 [Enum.Material.Sandstone]
+L1: GETIMPORT R0 13 [Enum.Material.Sandstone]
 L2: RETURN R0 1
 )");
 }
@@ -1801,17 +1842,15 @@ L2: RETURN R0 0
 L0: GETIMPORT R0 2 [math.random]
 CALL R0 0 1
 LOADK R1 K3 [0.5]
-JUMPIFNOTLT R1 R0 L1
-CLOSEUPVALS R0
-JUMP L2
-L1: ADDK R0 R0 K4 [0.29999999999999999]
-L2: NEWCLOSURE R1 P0
+JUMPIFLT R1 R0 L1
+ADDK R0 R0 K4 [0.29999999999999999]
+L1: NEWCLOSURE R1 P0
 CAPTURE REF R0
 CALL R1 0 1
-JUMPIF R1 L3
+JUMPIF R1 L2
 CLOSEUPVALS R0
 JUMPBACK L0
-L3: CLOSEUPVALS R0
+L2: CLOSEUPVALS R0
 RETURN R0 0
 )");
 
@@ -1863,44 +1902,212 @@ L2: RETURN R0 0
 L0: GETIMPORT R0 2 [math.random]
 CALL R0 0 1
 LOADK R1 K3 [0.5]
-JUMPIFNOTLT R1 R0 L1
-CLOSEUPVALS R0
-JUMP L2
-L1: ADDK R0 R0 K4 [0.29999999999999999]
-L2: NEWCLOSURE R1 P0
+JUMPIFLT R1 R0 L1
+ADDK R0 R0 K4 [0.29999999999999999]
+L1: NEWCLOSURE R1 P0
 CAPTURE UPVAL U0
 CAPTURE REF R0
 CALL R1 0 1
-JUMPIF R1 L3
+JUMPIF R1 L2
 CLOSEUPVALS R0
 JUMPBACK L0
-L3: CLOSEUPVALS R0
+L2: CLOSEUPVALS R0
 RETURN R0 0
 )");
 }
 
-TEST_CASE("LoopContinueUntilOops")
+TEST_CASE("LoopContinueIgnoresImplicitConstant")
 {
     // this used to crash the compiler :(
-    try
-    {
-        Luau::BytecodeBuilder bcb;
-        Luau::compileOrThrow(bcb, R"(
+    CHECK_EQ("\n" + compileFunction0(R"(
 local _
 repeat
 continue
 until not _
+)"),
+        R"(
+RETURN R0 0
+RETURN R0 0
 )");
+}
+
+TEST_CASE("LoopContinueIgnoresExplicitConstant")
+{
+    // Constants do not allocate locals and 'continue' validation should skip them if their lifetime already started
+    CHECK_EQ("\n" + compileFunction0(R"(
+local c = true
+repeat
+    continue
+until c
+)"),
+        R"(
+RETURN R0 0
+RETURN R0 0
+)");
+}
+
+TEST_CASE("LoopContinueRespectsExplicitConstant")
+{
+    // If local lifetime hasn't started, even if it's a constant that will not receive an allocation, it cannot be jumped over
+    try
+    {
+        Luau::BytecodeBuilder bcb;
+        Luau::compileOrThrow(bcb, R"(
+repeat
+    do continue end
+
+    local c = true
+until c
+)");
+
+        CHECK(!"Expected CompileError");
     }
     catch (Luau::CompileError& e)
     {
+        CHECK_EQ(e.getLocation().begin.line + 1, 6);
         CHECK_EQ(
-            std::string(e.what()), "Local _ used in the repeat..until condition is undefined because continue statement on line 4 jumps over it");
+            std::string(e.what()), "Local c used in the repeat..until condition is undefined because continue statement on line 3 jumps over it");
     }
+}
+
+TEST_CASE("LoopContinueIgnoresImplicitConstantAfterInline")
+{
+    // Inlining might also replace some locals with constants instead of allocating them
+    CHECK_EQ("\n" + compileFunction(R"(
+local function inline(f)
+    repeat
+        continue
+    until f
+end
+
+local function test(...)
+    inline(true)
+end
+
+test()
+)",
+                        1, 2),
+        R"(
+RETURN R0 0
+RETURN R0 0
+)");
+}
+
+TEST_CASE("LoopContinueCorrectlyHandlesImplicitConstantAfterUnroll")
+{
+    ScopedFastInt sfi(FInt::LuauCompileLoopUnrollThreshold, 200);
+
+    // access to implicit constant that depends on the unrolled loop constant is still invalid even though we can constant-propagate it
+    try
+    {
+        compileFunction(R"(
+for i = 1, 2 do
+    s()
+    repeat
+        if i == 2 then
+            continue
+        end
+        local x = i == 1 or a
+    until f(x)
+end
+)",
+            0, 2);
+
+        CHECK(!"Expected CompileError");
+    }
+    catch (Luau::CompileError& e)
+    {
+        CHECK_EQ(e.getLocation().begin.line + 1, 9);
+        CHECK_EQ(
+            std::string(e.what()), "Local x used in the repeat..until condition is undefined because continue statement on line 6 jumps over it");
+    }
+}
+
+TEST_CASE("LoopContinueUntilCapture")
+{
+    // validate continue upvalue closing behavior: continue must close locals defined in the nested scopes
+    // but can't close locals defined in the loop scope - these are visible to the condition and will be closed
+    // when evaluating the condition instead.
+    CHECK_EQ("\n" + compileFunction(R"(
+local a a = 0
+repeat
+    local b b = 0
+    if a then
+        local c
+        print(function() c = 0 end)
+        if a then
+            continue -- must close c but not a/b
+        end
+        -- must close c
+    end
+    -- must close b but not a
+until function() a = 0 b = 0 end
+-- must close b on loop exit
+-- must close a
+)",
+                        2),
+        R"(
+LOADNIL R0
+LOADN R0 0
+L0: LOADNIL R1
+LOADN R1 0
+JUMPIFNOT R0 L2
+LOADNIL R2
+GETIMPORT R3 1 [print]
+NEWCLOSURE R4 P0
+CAPTURE REF R2
+CALL R3 1 0
+JUMPIFNOT R0 L1
+CLOSEUPVALS R2
+JUMP L2
+L1: CLOSEUPVALS R2
+L2: NEWCLOSURE R2 P1
+CAPTURE REF R0
+CAPTURE REF R1
+JUMPIF R2 L3
+CLOSEUPVALS R1
+JUMPBACK L0
+L3: CLOSEUPVALS R1
+CLOSEUPVALS R0
+RETURN R0 0
+)");
+
+    // a simpler version of the above test doesn't need to close anything when evaluating continue
+    CHECK_EQ("\n" + compileFunction(R"(
+local a a = 0
+repeat
+    local b b = 0
+    if a then
+        continue -- must not close a/b
+    end
+    -- must close b but not a
+until function() a = 0 b = 0 end
+-- must close b on loop exit
+-- must close a
+)",
+                        1),
+        R"(
+LOADNIL R0
+LOADN R0 0
+L0: LOADNIL R1
+LOADN R1 0
+JUMPIF R0 L1
+L1: NEWCLOSURE R2 P0
+CAPTURE REF R0
+CAPTURE REF R1
+JUMPIF R2 L2
+CLOSEUPVALS R1
+JUMPBACK L0
+L2: CLOSEUPVALS R1
+CLOSEUPVALS R0
+RETURN R0 0
+)");
 }
 
 TEST_CASE("AndOrOptimizations")
 {
+    ScopedFastFlag sff(FFlag::LuauCompileRevK, true);
+
     // the OR/ORK optimization triggers for cutoff since lhs is simple
     CHECK_EQ("\n" + compileFunction(R"(
 local function advancedRidgedFilter(value, cutoff)
@@ -1913,17 +2120,15 @@ end
         R"(
 ORK R2 R1 K0 [0.5]
 SUB R0 R0 R2
-LOADN R4 1
-LOADN R8 0
-JUMPIFNOTLT R0 R8 L0
-MINUS R7 R0
-JUMPIF R7 L1
-L0: MOVE R7 R0
-L1: MULK R6 R7 K1 [1]
-LOADN R8 1
-SUB R7 R8 R2
-DIV R5 R6 R7
-SUB R3 R4 R5
+LOADN R7 0
+JUMPIFNOTLT R0 R7 L0
+MINUS R6 R0
+JUMPIF R6 L1
+L0: MOVE R6 R0
+L1: MULK R5 R6 K1 [1]
+SUBRK R6 K1 [1] R2
+DIV R4 R5 R6
+SUBRK R3 K1 [1] R4
 RETURN R3 1
 )");
 
@@ -1936,9 +2141,8 @@ end
                         0),
         R"(
 LOADB R2 0
-LOADK R4 K0 [0.5]
-MULK R5 R1 K1 [0.40000000000000002]
-SUB R3 R4 R5
+MULK R4 R1 K1 [0.40000000000000002]
+SUBRK R3 K0 [0.5] R4
 JUMPIFNOTLT R3 R0 L1
 LOADK R4 K0 [0.5]
 MULK R5 R1 K1 [0.40000000000000002]
@@ -1958,9 +2162,8 @@ end
                         0),
         R"(
 LOADB R2 1
-LOADK R4 K0 [0.5]
-MULK R5 R1 K1 [0.40000000000000002]
-SUB R3 R4 R5
+MULK R4 R1 K1 [0.40000000000000002]
+SUBRK R3 K0 [0.5] R4
 JUMPIFLT R0 R3 L1
 LOADK R4 K0 [0.5]
 MULK R5 R1 K1 [0.40000000000000002]
@@ -2103,9 +2306,9 @@ TEST_CASE("RecursionParse")
     // The test forcibly pushes the stack limit during compilation; in NoOpt, the stack consumption is much larger so we need to reduce the limit to
     // not overflow the C stack. When ASAN is enabled, stack consumption increases even more.
 #if defined(LUAU_ENABLE_ASAN)
-    ScopedFastInt flag("LuauRecursionLimit", 200);
+    ScopedFastInt flag(FInt::LuauRecursionLimit, 200);
 #elif defined(_NOOPT) || defined(_DEBUG)
-    ScopedFastInt flag("LuauRecursionLimit", 300);
+    ScopedFastInt flag(FInt::LuauRecursionLimit, 300);
 #endif
 
     Luau::BytecodeBuilder bcb;
@@ -4210,7 +4413,7 @@ RETURN R0 0
     bcb.setDumpFlags(Luau::BytecodeBuilder::Dump_Code);
     Luau::CompileOptions options;
     const char* mutableGlobals[] = {"Game", "Workspace", "game", "plugin", "script", "shared", "workspace", NULL};
-    options.mutableGlobals = &mutableGlobals[0];
+    options.mutableGlobals = mutableGlobals;
     Luau::compileOrThrow(bcb, source, options);
 
     CHECK_EQ("\n" + bcb.dumpFunction(0), R"(
@@ -4282,6 +4485,41 @@ FASTCALL 54 L0
 GETIMPORT R0 2 [Vector3.new]
 CALL R0 3 -1
 L0: RETURN R0 -1
+)");
+}
+
+TEST_CASE("VectorLiterals")
+{
+    ScopedFastFlag sff(FFlag::LuauVectorLiterals, true);
+
+    CHECK_EQ("\n" + compileFunction("return Vector3.new(1, 2, 3)", 0, 2, /*enableVectors*/ true), R"(
+LOADK R0 K0 [1, 2, 3]
+RETURN R0 1
+)");
+
+    CHECK_EQ("\n" + compileFunction("print(Vector3.new(1, 2, 3))", 0, 2, /*enableVectors*/ true), R"(
+GETIMPORT R0 1 [print]
+LOADK R1 K2 [1, 2, 3]
+CALL R0 1 0
+RETURN R0 0
+)");
+
+    CHECK_EQ("\n" + compileFunction("print(Vector3.new(1, 2, 3, 4))", 0, 2, /*enableVectors*/ true), R"(
+GETIMPORT R0 1 [print]
+LOADK R1 K2 [1, 2, 3, 4]
+CALL R0 1 0
+RETURN R0 0
+)");
+
+    CHECK_EQ("\n" + compileFunction("return Vector3.new(0, 0, 0), Vector3.new(-0, 0, 0)", 0, 2, /*enableVectors*/ true), R"(
+LOADK R0 K0 [0, 0, 0]
+LOADK R1 K1 [-0, 0, 0]
+RETURN R0 2
+)");
+
+    CHECK_EQ("\n" + compileFunction("return type(Vector3.new(0, 0, 0))", 0, 2, /*enableVectors*/ true), R"(
+LOADK R0 K0 ['vector']
+RETURN R0 1
 )");
 }
 
@@ -4564,8 +4802,8 @@ L1: RETURN R0 0
 TEST_CASE("LoopUnrollControlFlow")
 {
     ScopedFastInt sfis[] = {
-        {"LuauCompileLoopUnrollThreshold", 50},
-        {"LuauCompileLoopUnrollThresholdMaxBoost", 300},
+        {FInt::LuauCompileLoopUnrollThreshold, 50},
+        {FInt::LuauCompileLoopUnrollThresholdMaxBoost, 300},
     };
 
     // break jumps to the end
@@ -4701,8 +4939,8 @@ RETURN R0 0
 TEST_CASE("LoopUnrollCost")
 {
     ScopedFastInt sfis[] = {
-        {"LuauCompileLoopUnrollThreshold", 25},
-        {"LuauCompileLoopUnrollThresholdMaxBoost", 300},
+        {FInt::LuauCompileLoopUnrollThreshold, 25},
+        {FInt::LuauCompileLoopUnrollThresholdMaxBoost, 300},
     };
 
     // loops with short body
@@ -4879,8 +5117,8 @@ L1: RETURN R0 0
 TEST_CASE("LoopUnrollCostBuiltins")
 {
     ScopedFastInt sfis[] = {
-        {"LuauCompileLoopUnrollThreshold", 25},
-        {"LuauCompileLoopUnrollThresholdMaxBoost", 300},
+        {FInt::LuauCompileLoopUnrollThreshold, 25},
+        {FInt::LuauCompileLoopUnrollThresholdMaxBoost, 300},
     };
 
     // this loop uses builtins and is close to the cost budget so it's important that we model builtins as cheaper than regular calls
@@ -5082,7 +5320,7 @@ RETURN R1 1
 )");
 }
 
-TEST_CASE("InlineBasicProhibited")
+TEST_CASE("InlineProhibited")
 {
     // we can't inline variadic functions
     CHECK_EQ("\n" + compileFunction(R"(
@@ -5118,6 +5356,66 @@ MOVE R1 R0
 CALL R1 0 1
 GETIMPORT R2 2 [getfenv]
 CALL R2 0 0
+RETURN R1 1
+)");
+}
+
+TEST_CASE("InlineProhibitedRecursion")
+{
+    // we can't inline recursive invocations of functions in the functions
+    // this is actually profitable in certain cases, but it complicates the compiler as it means a local has multiple registers/values
+
+    // in this example, inlining is blocked because we're compiling fact() and we don't yet have the cost model / profitability data for fact()
+    CHECK_EQ("\n" + compileFunction(R"(
+local function fact(n)
+    return if n <= 1 then 1 else fact(n-1)*n
+end
+
+return fact
+)",
+                        0, 2),
+        R"(
+LOADN R2 1
+JUMPIFNOTLE R0 R2 L0
+LOADN R1 1
+RETURN R1 1
+L0: GETUPVAL R2 0
+SUBK R3 R0 K0 [1]
+CALL R2 1 1
+MUL R1 R2 R0
+RETURN R1 1
+)");
+
+    // in this example, inlining of fact() succeeds, but the nested call to fact() fails since fact is already on the inline stack
+    CHECK_EQ("\n" + compileFunction(R"(
+local function fact(n)
+    return if n <= 1 then 1 else fact(n-1)*n
+end
+
+local function factsafe(n)
+    assert(n >= 1)
+    return fact(n)
+end
+
+return factsafe
+)",
+                        1, 2),
+        R"(
+LOADN R3 1
+JUMPIFLE R3 R0 L0
+LOADB R2 0 +1
+L0: LOADB R2 1
+L1: FASTCALL1 1 R2 L2
+GETIMPORT R1 1 [assert]
+CALL R1 1 0
+L2: LOADN R2 1
+JUMPIFNOTLE R0 R2 L3
+LOADN R1 1
+RETURN R1 1
+L3: GETUPVAL R2 0
+SUBK R3 R0 K2 [1]
+CALL R2 1 1
+MUL R1 R2 R0
 RETURN R1 1
 )");
 }
@@ -5697,9 +5995,9 @@ RETURN R3 1
 TEST_CASE("InlineThresholds")
 {
     ScopedFastInt sfis[] = {
-        {"LuauCompileInlineThreshold", 25},
-        {"LuauCompileInlineThresholdMaxBoost", 300},
-        {"LuauCompileInlineDepth", 2},
+        {FInt::LuauCompileInlineThreshold, 25},
+        {FInt::LuauCompileInlineThresholdMaxBoost, 300},
+        {FInt::LuauCompileInlineDepth, 2},
     };
 
     // this function has enormous register pressure (50 regs) so we choose not to inline it
@@ -6276,7 +6574,7 @@ return
     math.log10(100),
     math.log(1),
     math.log(4, 2),
-    math.log(27, 3),
+    math.log(64, 4),
     math.max(1, 2, 3),
     math.min(1, 2, 3),
     math.pow(3, 3),
@@ -7036,6 +7334,21 @@ CALL R0 -1 1
 L0: RETURN R0 1
 )");
 
+    // some builtins are not variadic and have a fixed number of arguments but are not none-safe, meaning that we can't replace calls that may
+    // return none with calls that will return nil
+    CHECK_EQ("\n" + compileFunction(R"(
+return type(unknown())
+)",
+                        0, 2),
+        R"(
+GETIMPORT R1 1 [unknown]
+CALL R1 0 -1
+FASTCALL 40 L0
+GETIMPORT R0 3 [type]
+CALL R0 -1 1
+L0: RETURN R0 1
+)");
+
     // importantly, this optimization also helps us get around the multret inlining restriction for builtin wrappers
     CHECK_EQ("\n" + compileFunction(R"(
 local function new()
@@ -7080,12 +7393,7 @@ L1: RETURN R3 1
 
 TEST_CASE("EncodedTypeTable")
 {
-    ScopedFastFlag sffs[] = {
-        {"BytecodeVersion4", true},
-        {"CompileFunctionType", true},
-    };
-
-    CHECK_EQ("\n" + compileFunction0TypeTable(R"(
+    CHECK_EQ("\n" + compileTypeTable(R"(
 function myfunc(test: string, num: number)
     print(test)
 end
@@ -7104,6 +7412,9 @@ end
 function myfunc5(test: string | number, n: number | boolean)
 end
 
+function myfunc6(test: (number) -> string)
+end
+
 myfunc('test')
 )"),
         R"(
@@ -7111,9 +7422,10 @@ myfunc('test')
 1: function(number?)
 2: function(string, number)
 3: function(any, number)
+5: function(function)
 )");
 
-    CHECK_EQ("\n" + compileFunction0TypeTable(R"(
+    CHECK_EQ("\n" + compileTypeTable(R"(
 local Str = {
     a = 1
 }
@@ -7126,7 +7438,443 @@ end
 Str:test(234)
 )"),
         R"(
-0: function({ }, number)
+0: function(table, number)
+)");
+}
+
+TEST_CASE("HostTypesAreUserdata")
+{
+    CHECK_EQ("\n" + compileTypeTable(R"(
+function myfunc(test: string, num: number)
+    print(test)
+end
+
+function myfunc2(test: Instance, num: number)
+end
+
+type Foo = string
+
+function myfunc3(test: string, n: Foo)
+end
+
+function myfunc4<Bar>(test: Bar, n: Part)
+end
+)"),
+        R"(
+0: function(string, number)
+1: function(userdata, number)
+2: function(string, string)
+3: function(any, userdata)
+)");
+}
+
+TEST_CASE("HostTypesVector")
+{
+    CHECK_EQ("\n" + compileTypeTable(R"(
+function myfunc(test: Instance, pos: Vector3)
+end
+
+function myfunc2<Vector3>(test: Instance, pos: Vector3)
+end
+
+do
+    type Vector3 = number
+
+    function myfunc3(test: Instance, pos: Vector3)
+    end
+end
+)"),
+        R"(
+0: function(userdata, vector)
+1: function(userdata, any)
+2: function(userdata, number)
+)");
+}
+
+TEST_CASE("TypeAliasScoping")
+{
+    CHECK_EQ("\n" + compileTypeTable(R"(
+do
+    type Part = number
+end
+
+function myfunc1(test: Part, num: number)
+end
+
+do
+    type Part = number
+
+    function myfunc2(test: Part, num: number)
+    end
+end
+
+repeat
+    type Part = number
+until (function(test: Part, num: number) end)()
+
+function myfunc4(test: Instance, num: number)
+end
+
+type Instance = string
+)"),
+        R"(
+0: function(userdata, number)
+1: function(number, number)
+2: function(number, number)
+3: function(string, number)
+)");
+}
+
+TEST_CASE("TypeAliasResolve")
+{
+    CHECK_EQ("\n" + compileTypeTable(R"(
+type Foo1 = number
+type Foo2 = { number }
+type Foo3 = Part
+type Foo4 = Foo1 -- we do not resolve aliases within aliases
+type Foo5<X> = X
+
+function myfunc(f1: Foo1, f2: Foo2, f3: Foo3, f4: Foo4, f5: Foo5<number>)
+end
+
+function myfuncerr(f1: Foo1<string>, f2: Foo5)
+end
+
+)"),
+        R"(
+0: function(number, table, userdata, any, any)
+1: function(number, any)
+)");
+}
+
+TEST_CASE("TypeUnionIntersection")
+{
+    CHECK_EQ("\n" + compileTypeTable(R"(
+function myfunc(test: string | nil, foo: nil)
+end
+
+function myfunc2(test: string & nil, foo: nil)
+end
+
+function myfunc3(test: string | number, foo: nil)
+end
+
+function myfunc4(test: string & number, foo: nil)
+end
+)"),
+        R"(
+0: function(string?, nil)
+1: function(any, nil)
+2: function(any, nil)
+3: function(any, nil)
+)");
+}
+
+TEST_CASE("BuiltinFoldMathK")
+{
+    // we can fold math.pi at optimization level 2
+    CHECK_EQ("\n" + compileFunction(R"(
+function test()
+    return math.pi * 2
+end
+)",
+                        0, 2),
+        R"(
+LOADK R0 K0 [6.2831853071795862]
+RETURN R0 1
+)");
+
+    // we don't do this at optimization level 1 because it may interfere with environment substitution
+    CHECK_EQ("\n" + compileFunction(R"(
+function test()
+    return math.pi * 2
+end
+)",
+                        0, 1),
+        R"(
+GETIMPORT R1 3 [math.pi]
+MULK R0 R1 K0 [2]
+RETURN R0 1
+)");
+
+    // we also don't do it if math global is assigned to
+    CHECK_EQ("\n" + compileFunction(R"(
+function test()
+    return math.pi * 2
+end
+
+math = { pi = 4 }
+)",
+                        0, 2),
+        R"(
+GETGLOBAL R2 K1 ['math']
+GETTABLEKS R1 R2 K2 ['pi']
+MULK R0 R1 K0 [2]
+RETURN R0 1
+)");
+}
+
+TEST_CASE("NoBuiltinFoldFenv")
+{
+    // builtin folding is disabled when getfenv/setfenv is used in the module
+    CHECK_EQ("\n" + compileFunction(R"(
+getfenv()
+
+function test()
+    return math.pi, math.sin(0)
+end
+)",
+                        0, 2),
+        R"(
+GETIMPORT R0 2 [math.pi]
+LOADN R2 0
+FASTCALL1 24 R2 L0
+GETIMPORT R1 4 [math.sin]
+CALL R1 1 1
+L0: RETURN R0 2
+)");
+}
+
+TEST_CASE("IfThenElseAndOr")
+{
+    // if v then v else k can be optimized to ORK
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x = ...
+return if x then x else 0
+)"),
+        R"(
+GETVARARGS R0 1
+ORK R1 R0 K0 [0]
+RETURN R1 1
+)");
+
+    // if v then v else l can be optimized to OR
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then x else y
+)"),
+        R"(
+GETVARARGS R0 2
+OR R2 R0 R1
+RETURN R2 1
+)");
+
+    // this also works in presence of type casts
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then x :: number else 0
+)"),
+        R"(
+GETVARARGS R0 2
+ORK R2 R0 K0 [0]
+RETURN R2 1
+)");
+
+    // if v then k else v can be optimized to ANDK
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x = ...
+return if x then 0 else x
+)"),
+        R"(
+GETVARARGS R0 1
+ANDK R1 R0 K0 [0]
+RETURN R1 1
+)");
+
+    // if v then l else v can be optimized to AND
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then y else x
+)"),
+        R"(
+GETVARARGS R0 2
+AND R2 R0 R1
+RETURN R2 1
+)");
+
+    // this also works in presence of type casts
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then y else x :: number
+)"),
+        R"(
+GETVARARGS R0 2
+AND R2 R0 R1
+RETURN R2 1
+)");
+
+    // all of the above work when the target is a temporary register, which is safe because the value is only mutated once
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+x = if x then x else y
+x = if x then y else x
+)"),
+        R"(
+GETVARARGS R0 2
+OR R0 R0 R1
+AND R0 R0 R1
+RETURN R0 0
+)");
+
+    // note that we can't do this transformation if the expression has possible side effects
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x = ...
+return if x.data then x.data else 0
+)"),
+        R"(
+GETVARARGS R0 1
+GETTABLEKS R2 R0 K0 ['data']
+JUMPIFNOT R2 L0
+GETTABLEKS R1 R0 K0 ['data']
+RETURN R1 1
+L0: LOADN R1 0
+RETURN R1 1
+)");
+}
+
+TEST_CASE("SideEffects")
+{
+    // we do not evaluate expressions in some cases when we know they can't carry side effects
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x = 5, print
+local y = 5, 42
+local z = 5, table.find -- considered side effecting because of metamethods
+)"),
+        R"(
+LOADN R0 5
+LOADN R1 5
+LOADN R2 5
+GETIMPORT R3 2 [table.find]
+RETURN R0 0
+)");
+
+    // this also applies to returns in cases where a function gets inlined
+    CHECK_EQ("\n" + compileFunction(R"(
+local function test1()
+    return 42
+end
+
+local function test2()
+    return print
+end
+
+local function test3()
+    return function() print(test3) end
+end
+
+local function test4()
+    return table.find -- considered side effecting because of metamethods
+end
+
+test1()
+test2()
+test3()
+test4()
+)",
+                        5, 2),
+        R"(
+DUPCLOSURE R0 K0 ['test1']
+DUPCLOSURE R1 K1 ['test2']
+DUPCLOSURE R2 K2 ['test3']
+CAPTURE VAL R2
+DUPCLOSURE R3 K3 ['test4']
+GETIMPORT R4 6 [table.find]
+RETURN R0 0
+)");
+}
+
+TEST_CASE("IfElimination")
+{
+    // if the left hand side of a condition is constant, it constant folds and we don't emit the branch
+    CHECK_EQ("\n" + compileFunction0("local a = false if a and b then b() end"), R"(
+RETURN R0 0
+)");
+
+    CHECK_EQ("\n" + compileFunction0("local a = true if a or b then b() end"), R"(
+GETIMPORT R0 1 [b]
+CALL R0 0 0
+RETURN R0 0
+)");
+
+    // of course this keeps the other branch if present
+    CHECK_EQ("\n" + compileFunction0("local a = false if a and b then b() else return 42 end"), R"(
+LOADN R0 42
+RETURN R0 1
+RETURN R0 0
+)");
+
+    CHECK_EQ("\n" + compileFunction0("local a = true if a or b then b() else return 42 end"), R"(
+GETIMPORT R0 1 [b]
+CALL R0 0 0
+RETURN R0 0
+)");
+
+    // if the right hand side is constant, the condition doesn't constant fold but we still could eliminate one of the branches for 'a and K'
+    CHECK_EQ("\n" + compileFunction0("local a = false if b and a then return 1 end"), R"(
+RETURN R0 0
+)");
+
+    CHECK_EQ("\n" + compileFunction0("local a = false if b and a then return 1 else return 2 end"), R"(
+LOADN R0 2
+RETURN R0 1
+)");
+
+    // of course if the right hand side of 'and' is 'true', we still need to actually evaluate the left hand side
+    CHECK_EQ("\n" + compileFunction0("local a = true if b and a then return 1 end"), R"(
+GETIMPORT R0 1 [b]
+JUMPIFNOT R0 L0
+LOADN R0 1
+RETURN R0 1
+L0: RETURN R0 0
+)");
+
+    CHECK_EQ("\n" + compileFunction0("local a = true if b and a then return 1 else return 2 end"), R"(
+GETIMPORT R0 1 [b]
+JUMPIFNOT R0 L0
+LOADN R0 1
+RETURN R0 1
+L0: LOADN R0 2
+RETURN R0 1
+)");
+
+    // also even if we eliminate the branch, we still need to compute side effects
+    CHECK_EQ("\n" + compileFunction0("local a = false if b.test and a then return 1 end"), R"(
+GETIMPORT R0 2 [b.test]
+RETURN R0 0
+)");
+
+    CHECK_EQ("\n" + compileFunction0("local a = false if b.test and a then return 1 else return 2 end"), R"(
+GETIMPORT R0 2 [b.test]
+LOADN R0 2
+RETURN R0 1
+)");
+}
+
+TEST_CASE("ArithRevK")
+{
+    ScopedFastFlag sff(FFlag::LuauCompileRevK, true);
+
+    // - and / have special optimized form for reverse constants; in the future, + and * will likely get compiled to ADDK/MULK
+    // other operators are not important enough to optimize reverse constant forms for
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x: number = unknown
+return 2 + x, 2 - x, 2 * x, 2 / x, 2 % x, 2 // x, 2 ^ x
+)"),
+        R"(
+GETIMPORT R0 1 [unknown]
+LOADN R2 2
+ADD R1 R2 R0
+SUBRK R2 K2 [2] R0
+LOADN R4 2
+MUL R3 R4 R0
+DIVRK R4 K2 [2] R0
+LOADN R6 2
+MOD R5 R6 R0
+LOADN R7 2
+IDIV R6 R7 R0
+LOADN R8 2
+POW R7 R8 R0
+RETURN R1 7
 )");
 }
 

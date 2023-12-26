@@ -407,7 +407,7 @@ static void resume_handle(lua_State* L, void* ud)
     L->ci = restoreci(L, old_ci);
 
     // close eventual pending closures; this means it's now safe to restore stack
-    luaF_close(L, L->base);
+    luaF_close(L, L->ci->base);
 
     // finish cont call and restore stack to previous ci top
     luau_poscall(L, L->top - n);
@@ -576,11 +576,13 @@ int luaD_pcall(lua_State* L, Pfunc func, void* u, ptrdiff_t old_top, ptrdiff_t e
         if (!oldactive)
             L->isactive = false;
 
+        bool yieldable = L->nCcalls <= L->baseCcalls; // Inlined logic from 'lua_isyieldable' to avoid potential for an out of line call.
+
         // restore nCcalls before calling the debugprotectederror callback which may rely on the proper value to have been restored.
         L->nCcalls = oldnCcalls;
 
         // an error occurred, check if we have a protected error callback
-        if (L->global->cb.debugprotectederror)
+        if (yieldable && L->global->cb.debugprotectederror)
         {
             L->global->cb.debugprotectederror(L);
 

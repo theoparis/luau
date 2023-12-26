@@ -2,6 +2,7 @@
 #include "Luau/TypeInfer.h"
 
 #include "Luau/ApplyTypeFunction.h"
+#include "Luau/Cancellation.h"
 #include "Luau/Clone.h"
 #include "Luau/Common.h"
 #include "Luau/Instantiation.h"
@@ -34,14 +35,11 @@ LUAU_FASTFLAG(LuauKnowsTheDataModel3)
 LUAU_FASTFLAGVARIABLE(DebugLuauFreezeDuringUnification, false)
 LUAU_FASTFLAGVARIABLE(DebugLuauSharedSelf, false)
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
-LUAU_FASTFLAGVARIABLE(LuauAllowIndexClassParameters, false)
-LUAU_FASTFLAG(LuauUninhabitedSubAnything2)
-LUAU_FASTFLAG(LuauOccursIsntAlwaysFailure)
-LUAU_FASTFLAGVARIABLE(LuauTypecheckTypeguards, false)
 LUAU_FASTFLAGVARIABLE(LuauTinyControlFlowAnalysis, false)
-LUAU_FASTFLAGVARIABLE(LuauTypecheckClassTypeIndexers, false)
+LUAU_FASTFLAGVARIABLE(LuauLoopControlFlowAnalysis, false)
 LUAU_FASTFLAGVARIABLE(LuauAlwaysCommitInferencesOfFunctionCalls, false)
-LUAU_FASTFLAG(LuauParseDeclareClassIndexer)
+LUAU_FASTFLAG(LuauBufferTypeck)
+LUAU_FASTFLAGVARIABLE(LuauRemoveBadRelationalOperatorWarning, false)
 
 namespace Luau
 {
@@ -202,27 +200,13 @@ static bool isMetamethod(const Name& name)
 {
     return name == "__index" || name == "__newindex" || name == "__call" || name == "__concat" || name == "__unm" || name == "__add" ||
            name == "__sub" || name == "__mul" || name == "__div" || name == "__mod" || name == "__pow" || name == "__tostring" ||
-           name == "__metatable" || name == "__eq" || name == "__lt" || name == "__le" || name == "__mode" || name == "__iter" || name == "__len";
+           name == "__metatable" || name == "__eq" || name == "__lt" || name == "__le" || name == "__mode" || name == "__iter" || name == "__len" ||
+           name == "__idiv";
 }
 
 size_t HashBoolNamePair::operator()(const std::pair<bool, Name>& pair) const
 {
     return std::hash<bool>()(pair.first) ^ std::hash<Name>()(pair.second);
-}
-
-GlobalTypes::GlobalTypes(NotNull<BuiltinTypes> builtinTypes)
-    : builtinTypes(builtinTypes)
-{
-    globalScope = std::make_shared<Scope>(globalTypes.addTypePack(TypePackVar{FreeTypePack{TypeLevel{}}}));
-
-    globalScope->addBuiltinTypeBinding("any", TypeFun{{}, builtinTypes->anyType});
-    globalScope->addBuiltinTypeBinding("nil", TypeFun{{}, builtinTypes->nilType});
-    globalScope->addBuiltinTypeBinding("number", TypeFun{{}, builtinTypes->numberType});
-    globalScope->addBuiltinTypeBinding("string", TypeFun{{}, builtinTypes->stringType});
-    globalScope->addBuiltinTypeBinding("boolean", TypeFun{{}, builtinTypes->booleanType});
-    globalScope->addBuiltinTypeBinding("thread", TypeFun{{}, builtinTypes->threadType});
-    globalScope->addBuiltinTypeBinding("unknown", TypeFun{{}, builtinTypes->unknownType});
-    globalScope->addBuiltinTypeBinding("never", TypeFun{{}, builtinTypes->neverType});
 }
 
 TypeChecker::TypeChecker(const ScopePtr& globalScope, ModuleResolver* resolver, NotNull<BuiltinTypes> builtinTypes, InternalErrorReporter* iceHandler)
@@ -237,6 +221,7 @@ TypeChecker::TypeChecker(const ScopePtr& globalScope, ModuleResolver* resolver, 
     , stringType(builtinTypes->stringType)
     , booleanType(builtinTypes->booleanType)
     , threadType(builtinTypes->threadType)
+    , bufferType(builtinTypes->bufferType)
     , anyType(builtinTypes->anyType)
     , unknownType(builtinTypes->unknownType)
     , neverType(builtinTypes->neverType)
@@ -269,6 +254,8 @@ ModulePtr TypeChecker::checkWithoutRecursionCheck(const SourceModule& module, Mo
     currentModule.reset(new Module);
     currentModule->name = module.name;
     currentModule->humanReadableName = module.humanReadableName;
+    currentModule->internalTypes.owningModule = currentModule.get();
+    currentModule->interfaceTypes.owningModule = currentModule.get();
     currentModule->type = module.type;
     currentModule->allocator = module.allocator;
     currentModule->names = module.names;
@@ -302,6 +289,10 @@ ModulePtr TypeChecker::checkWithoutRecursionCheck(const SourceModule& module, Mo
     catch (const TimeLimitError&)
     {
         currentModule->timeout = true;
+    }
+    catch (const UserCancelError&)
+    {
+        currentModule->cancelled = true;
     }
 
     if (FFlag::DebugLuauSharedSelf)
@@ -346,7 +337,9 @@ ModulePtr TypeChecker::checkWithoutRecursionCheck(const SourceModule& module, Mo
 ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStat& program)
 {
     if (finishTime && TimeTrace::getClock() > *finishTime)
-        throw TimeLimitError(iceHandler->moduleName);
+        throwTimeLimitError();
+    if (cancellationToken && cancellationToken->requested())
+        throwUserCancelError();
 
     if (auto block = program.as<AstStatBlock>())
         return check(scope, *block);
@@ -356,11 +349,10 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStat& program)
         return check(scope, *while_);
     else if (auto repeat = program.as<AstStatRepeat>())
         return check(scope, *repeat);
-    else if (program.is<AstStatBreak>() || program.is<AstStatContinue>())
-    {
-        // Nothing to do
-        return ControlFlow::None;
-    }
+    else if (program.is<AstStatBreak>())
+        return FFlag::LuauLoopControlFlowAnalysis ? ControlFlow::Breaks : ControlFlow::None;
+    else if (program.is<AstStatContinue>())
+        return FFlag::LuauLoopControlFlowAnalysis ? ControlFlow::Continues : ControlFlow::None;
     else if (auto return_ = program.as<AstStatReturn>())
         return check(scope, *return_);
     else if (auto expr = program.as<AstStatExpr>())
@@ -758,12 +750,14 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatIf& statement
         if (statement.elsebody)
             elsecf = check(elseScope, *statement.elsebody);
 
-        if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && elsecf == ControlFlow::None)
+        if (thencf != ControlFlow::None && elsecf == ControlFlow::None)
             scope->inheritRefinements(elseScope);
-        else if (thencf == ControlFlow::None && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
+        else if (thencf == ControlFlow::None && elsecf != ControlFlow::None)
             scope->inheritRefinements(thenScope);
 
-        if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
+        if (FFlag::LuauLoopControlFlowAnalysis && thencf == elsecf)
+            return thencf;
+        else if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
             return ControlFlow::Returns;
         else
             return ControlFlow::None;
@@ -841,7 +835,7 @@ struct Demoter : Substitution
 
     bool ignoreChildren(TypeId ty) override
     {
-        if (FFlag::LuauClassTypeVarsInSubstitution && get<ClassType>(ty))
+        if (get<ClassType>(ty))
             return true;
 
         return false;
@@ -1187,6 +1181,16 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatLocal& local)
                     {
                         scope->importedTypeBindings[name] = module->exportedTypeBindings;
                         scope->importedModules[name] = moduleInfo->name;
+
+                        // Imported types of requires that transitively refer to current module have to be replaced with 'any'
+                        for (const auto& [location, path] : requireCycles)
+                        {
+                            if (!path.empty() && path.front() == moduleInfo->name)
+                            {
+                                for (auto& [name, tf] : scope->importedTypeBindings[name])
+                                    tf = TypeFun{{}, {}, anyType};
+                            }
+                        }
                     }
 
                     // In non-strict mode we force the module type on the variable, in strict mode it is already unified
@@ -1622,13 +1626,6 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatTypeAlias& ty
 
     TypeId& bindingType = bindingsMap[name].type;
 
-    if (!FFlag::LuauOccursIsntAlwaysFailure)
-    {
-        if (unify(ty, bindingType, aliasScope, typealias.location))
-            bindingType = ty;
-        return ControlFlow::None;
-    }
-
     unify(ty, bindingType, aliasScope, typealias.location);
 
     // It is possible for this unification to succeed but for
@@ -1758,7 +1755,7 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatDeclareClass&
     if (!ctv->metatable)
         ice("No metatable for declared class");
 
-    if (const auto& indexer = declaredClass.indexer; FFlag::LuauParseDeclareClassIndexer && indexer)
+    if (const auto& indexer = declaredClass.indexer)
         ctv->indexer = TableIndexer(resolveType(scope, *indexer->indexType), resolveType(scope, *indexer->resultType));
 
     TableType* metatable = getMutable<TableType>(*ctv->metatable);
@@ -2108,21 +2105,18 @@ std::optional<TypeId> TypeChecker::getIndexTypeFromTypeImpl(
         if (prop)
             return prop->type();
 
-        if (FFlag::LuauTypecheckClassTypeIndexers)
+        if (auto indexer = cls->indexer)
         {
-            if (auto indexer = cls->indexer)
-            {
-                // TODO: Property lookup should work with string singletons or unions thereof as the indexer key type.
-                ErrorVec errors = tryUnify(stringType, indexer->indexType, scope, location);
+            // TODO: Property lookup should work with string singletons or unions thereof as the indexer key type.
+            ErrorVec errors = tryUnify(stringType, indexer->indexType, scope, location);
 
-                if (errors.empty())
-                    return indexer->indexResultType;
+            if (errors.empty())
+                return indexer->indexResultType;
 
-                if (addErrors)
-                    reportError(location, UnknownProperty{type, name});
+            if (addErrors)
+                reportError(location, UnknownProperty{type, name});
 
-                return std::nullopt;
-            }
+            return std::nullopt;
         }
     }
     else if (const UnionType* utv = get<UnionType>(type))
@@ -2558,6 +2552,8 @@ std::string opToMetaTableEntry(const AstExprBinary::Op& op)
         return "__mul";
     case AstExprBinary::Div:
         return "__div";
+    case AstExprBinary::FloorDiv:
+        return "__idiv";
     case AstExprBinary::Mod:
         return "__mod";
     case AstExprBinary::Pow:
@@ -2648,10 +2644,7 @@ static std::optional<bool> areEqComparable(NotNull<TypeArena> arena, NotNull<Nor
     if (!n)
         return std::nullopt;
 
-    if (FFlag::LuauUninhabitedSubAnything2)
-        return normalizer->isInhabited(n);
-    else
-        return isInhabited_DEPRECATED(*n);
+    return normalizer->isInhabited(n);
 }
 
 TypeId TypeChecker::checkRelationalOperation(
@@ -2762,10 +2755,26 @@ TypeId TypeChecker::checkRelationalOperation(
         {
             reportErrors(state.errors);
 
-            if (!isEquality && state.errors.empty() && (get<UnionType>(leftType) || isBoolean(leftType)))
+            if (FFlag::LuauRemoveBadRelationalOperatorWarning)
             {
-                reportError(expr.location, GenericError{format("Type '%s' cannot be compared with relational operator %s", toString(leftType).c_str(),
-                                               toString(expr.op).c_str())});
+                // The original version of this check also produced this error when we had a union type.
+                // However, the old solver does not readily have the ability to discern if the union is comparable.
+                // This is the case when the lhs is e.g. a union of singletons and the rhs is the combined type.
+                // The new solver has much more powerful logic for resolving relational operators, but for now,
+                // we need to be conservative in the old solver to deliver a reasonable developer experience.
+                if (!isEquality && state.errors.empty() && isBoolean(leftType))
+                {
+                    reportError(expr.location, GenericError{format("Type '%s' cannot be compared with relational operator %s",
+                                                   toString(leftType).c_str(), toString(expr.op).c_str())});
+                }
+            }
+            else
+            {
+                if (!isEquality && state.errors.empty() && (get<UnionType>(leftType) || isBoolean(leftType)))
+                {
+                    reportError(expr.location, GenericError{format("Type '%s' cannot be compared with relational operator %s",
+                                                   toString(leftType).c_str(), toString(expr.op).c_str())});
+                }
             }
 
             return booleanType;
@@ -3054,6 +3063,7 @@ TypeId TypeChecker::checkBinaryOperation(
     case AstExprBinary::Sub:
     case AstExprBinary::Mul:
     case AstExprBinary::Div:
+    case AstExprBinary::FloorDiv:
     case AstExprBinary::Mod:
     case AstExprBinary::Pow:
         reportErrors(tryUnify(lhsType, numberType, scope, expr.left->location));
@@ -3094,22 +3104,13 @@ WithPredicate<TypeId> TypeChecker::checkExpr(const ScopePtr& scope, const AstExp
     }
     else if (expr.op == AstExprBinary::CompareEq || expr.op == AstExprBinary::CompareNe)
     {
-        if (!FFlag::LuauTypecheckTypeguards)
-        {
-            if (auto predicate = tryGetTypeGuardPredicate(expr))
-                return {booleanType, {std::move(*predicate)}};
-        }
-
         // For these, passing expectedType is worse than simply forcing them, because their implementation
         // may inadvertently check if expectedTypes exist first and use it, instead of forceSingleton first.
         WithPredicate<TypeId> lhs = checkExpr(scope, *expr.left, std::nullopt, /*forceSingleton=*/true);
         WithPredicate<TypeId> rhs = checkExpr(scope, *expr.right, std::nullopt, /*forceSingleton=*/true);
 
-        if (FFlag::LuauTypecheckTypeguards)
-        {
-            if (auto predicate = tryGetTypeGuardPredicate(expr))
-                return {booleanType, {std::move(*predicate)}};
-        }
+        if (auto predicate = tryGetTypeGuardPredicate(expr))
+            return {booleanType, {std::move(*predicate)}};
 
         PredicateVec predicates;
 
@@ -3316,38 +3317,24 @@ TypeId TypeChecker::checkLValueBinding(const ScopePtr& scope, const AstExprIndex
     }
     else if (const ClassType* lhsClass = get<ClassType>(lhs))
     {
-        if (FFlag::LuauTypecheckClassTypeIndexers)
+        if (const Property* prop = lookupClassProp(lhsClass, name))
         {
-            if (const Property* prop = lookupClassProp(lhsClass, name))
-            {
-                return prop->type();
-            }
-
-            if (auto indexer = lhsClass->indexer)
-            {
-                Unifier state = mkUnifier(scope, expr.location);
-                state.tryUnify(stringType, indexer->indexType);
-                if (state.errors.empty())
-                {
-                    state.log.commit();
-                    return indexer->indexResultType;
-                }
-            }
-
-            reportError(TypeError{expr.location, UnknownProperty{lhs, name}});
-            return errorRecoveryType(scope);
-        }
-        else
-        {
-            const Property* prop = lookupClassProp(lhsClass, name);
-            if (!prop)
-            {
-                reportError(TypeError{expr.location, UnknownProperty{lhs, name}});
-                return errorRecoveryType(scope);
-            }
-
             return prop->type();
         }
+
+        if (auto indexer = lhsClass->indexer)
+        {
+            Unifier state = mkUnifier(scope, expr.location);
+            state.tryUnify(stringType, indexer->indexType);
+            if (state.errors.empty())
+            {
+                state.log.commit();
+                return indexer->indexResultType;
+            }
+        }
+
+        reportError(TypeError{expr.location, UnknownProperty{lhs, name}});
+        return errorRecoveryType(scope);
     }
     else if (get<IntersectionType>(lhs))
     {
@@ -3389,57 +3376,52 @@ TypeId TypeChecker::checkLValueBinding(const ScopePtr& scope, const AstExprIndex
     {
         if (const ClassType* exprClass = get<ClassType>(exprType))
         {
-            if (FFlag::LuauTypecheckClassTypeIndexers)
+            if (const Property* prop = lookupClassProp(exprClass, value->value.data))
             {
-                if (const Property* prop = lookupClassProp(exprClass, value->value.data))
-                {
-                    return prop->type();
-                }
-
-                if (auto indexer = exprClass->indexer)
-                {
-                    unify(stringType, indexer->indexType, scope, expr.index->location);
-                    return indexer->indexResultType;
-                }
-
-                reportError(TypeError{expr.location, UnknownProperty{exprType, value->value.data}});
-                return errorRecoveryType(scope);
-            }
-            else
-            {
-                const Property* prop = lookupClassProp(exprClass, value->value.data);
-                if (!prop)
-                {
-                    reportError(TypeError{expr.location, UnknownProperty{exprType, value->value.data}});
-                    return errorRecoveryType(scope);
-                }
                 return prop->type();
+            }
+
+            if (auto indexer = exprClass->indexer)
+            {
+                unify(stringType, indexer->indexType, scope, expr.index->location);
+                return indexer->indexResultType;
+            }
+
+            reportError(TypeError{expr.location, UnknownProperty{exprType, value->value.data}});
+            return errorRecoveryType(scope);
+        }
+        else if (get<IntersectionType>(exprType))
+        {
+            Name name = std::string(value->value.data, value->value.size);
+
+            if (std::optional<TypeId> ty = getIndexTypeFromType(scope, exprType, name, expr.location, /* addErrors= */ false))
+                return *ty;
+
+            // If intersection has a table part, report that it cannot be extended just as a sealed table
+            if (isTableIntersection(exprType))
+            {
+                reportError(TypeError{expr.location, CannotExtendTable{exprType, CannotExtendTable::Property, name}});
+                return errorRecoveryType(scope);
             }
         }
     }
     else
     {
-        if (FFlag::LuauTypecheckClassTypeIndexers)
+        if (const ClassType* exprClass = get<ClassType>(exprType))
         {
-            if (const ClassType* exprClass = get<ClassType>(exprType))
+            if (auto indexer = exprClass->indexer)
             {
-                if (auto indexer = exprClass->indexer)
-                {
-                    unify(indexType, indexer->indexType, scope, expr.index->location);
-                    return indexer->indexResultType;
-                }
+                unify(indexType, indexer->indexType, scope, expr.index->location);
+                return indexer->indexResultType;
             }
         }
 
-        if (FFlag::LuauAllowIndexClassParameters)
+        if (const ClassType* exprClass = get<ClassType>(exprType))
         {
-            if (const ClassType* exprClass = get<ClassType>(exprType))
-            {
-                if (isNonstrictMode())
-                    return unknownType;
-                reportError(TypeError{expr.location, DynamicPropertyLookupOnClassesUnsafe{exprType}});
-                return errorRecoveryType(scope);
-            }
+            if (isNonstrictMode())
+                return unknownType;
+            reportError(TypeError{expr.location, DynamicPropertyLookupOnClassesUnsafe{exprType}});
+            return errorRecoveryType(scope);
         }
     }
 
@@ -4045,7 +4027,9 @@ void TypeChecker::checkArgumentList(const ScopePtr& scope, const AstExpr& funNam
                     if (argIndex < argLocations.size())
                         location = argLocations[argIndex];
 
-                    unify(*argIter, vtp->ty, scope, location);
+                    state.location = location;
+                    state.tryUnify(*argIter, vtp->ty);
+
                     ++argIter;
                     ++argIndex;
                 }
@@ -4860,7 +4844,7 @@ TypeId TypeChecker::instantiate(const ScopePtr& scope, TypeId ty, Location locat
     if (ftv && ftv->hasNoFreeOrGenericTypes)
         return ty;
 
-    Instantiation instantiation{log, &currentModule->internalTypes, scope->level, /*scope*/ nullptr};
+    Instantiation instantiation{log, &currentModule->internalTypes, builtinTypes, scope->level, /*scope*/ nullptr};
 
     if (instantiationChildLimit)
         instantiation.childLimit = *instantiationChildLimit;
@@ -4952,14 +4936,24 @@ void TypeChecker::reportErrors(const ErrorVec& errors)
         reportError(err);
 }
 
-void TypeChecker::ice(const std::string& message, const Location& location)
+LUAU_NOINLINE void TypeChecker::ice(const std::string& message, const Location& location)
 {
     iceHandler->ice(message, location);
 }
 
-void TypeChecker::ice(const std::string& message)
+LUAU_NOINLINE void TypeChecker::ice(const std::string& message)
 {
     iceHandler->ice(message);
+}
+
+LUAU_NOINLINE void TypeChecker::throwTimeLimitError()
+{
+    throw TimeLimitError(iceHandler->moduleName);
+}
+
+LUAU_NOINLINE void TypeChecker::throwUserCancelError()
+{
+    throw UserCancelError(iceHandler->moduleName);
 }
 
 void TypeChecker::prepareErrorsForDisplay(ErrorVec& errVec)
@@ -5406,7 +5400,7 @@ TypeId TypeChecker::resolveTypeWorker(const ScopePtr& scope, const AstType& anno
         std::optional<TableIndexer> tableIndexer;
 
         for (const auto& prop : table->props)
-            props[prop.name.value] = {resolveType(scope, *prop.type)};
+            props[prop.name.value] = {resolveType(scope, *prop.type), /* deprecated: */ false, {}, std::nullopt, {}, std::nullopt, prop.location};
 
         if (const auto& indexer = table->indexer)
             tableIndexer = TableIndexer(resolveType(scope, *indexer->indexType), resolveType(scope, *indexer->resultType));
@@ -6028,6 +6022,8 @@ void TypeChecker::resolve(const TypeGuardPredicate& typeguardP, RefinementMap& r
         return refine(isBoolean, booleanType);
     else if (typeguardP.kind == "thread")
         return refine(isThread, threadType);
+    else if (FFlag::LuauBufferTypeck && typeguardP.kind == "buffer")
+        return refine(isBuffer, bufferType);
     else if (typeguardP.kind == "table")
     {
         return refine([](TypeId ty) -> bool {

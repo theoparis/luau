@@ -46,7 +46,7 @@ int luaV_tostring(lua_State* L, StkId obj)
 const float* luaV_tovector(const TValue* obj)
 {
     if (ttisvector(obj))
-        return obj->value.v;
+        return vvalue(obj);
 
     return nullptr;
 }
@@ -288,7 +288,7 @@ int luaV_equalval(lua_State* L, const TValue* t1, const TValue* t2)
     case LUA_TBOOLEAN:
         return bvalue(t1) == bvalue(t2); // true must be 1 !!
     case LUA_TLIGHTUSERDATA:
-        return pvalue(t1) == pvalue(t2);
+        return pvalue(t1) == pvalue(t2) && (!FFlag::LuauTaggedLuData || lightuserdatatag(t1) == lightuserdatatag(t2));
     case LUA_TUSERDATA:
     {
         tm = get_compTM(L, uvalue(t1)->metatable, uvalue(t2)->metatable, TM_EQ);
@@ -394,6 +394,9 @@ void luaV_doarith(lua_State* L, StkId ra, const TValue* rb, const TValue* rc, TM
         case TM_DIV:
             setnvalue(ra, luai_numdiv(nb, nc));
             break;
+        case TM_IDIV:
+            setnvalue(ra, luai_numidiv(nb, nc));
+            break;
         case TM_MOD:
             setnvalue(ra, luai_nummod(nb, nc));
             break;
@@ -410,7 +413,12 @@ void luaV_doarith(lua_State* L, StkId ra, const TValue* rb, const TValue* rc, TM
     }
     else
     {
-        // vector operations that we support: v + v, v - v, v * v, s * v, v * s, v / v, s / v, v / s, -v
+        // vector operations that we support:
+        // v+v  v-v  -v    (add/sub/neg)
+        // v*v  s*v  v*s   (mul)
+        // v/v  s/v  v/s   (div)
+        // v//v s//v v//s  (floor div)
+
         const float* vb = luaV_tovector(rb);
         const float* vc = luaV_tovector(rc);
 
@@ -429,6 +437,10 @@ void luaV_doarith(lua_State* L, StkId ra, const TValue* rb, const TValue* rc, TM
                 return;
             case TM_DIV:
                 setvvalue(ra, vb[0] / vc[0], vb[1] / vc[1], vb[2] / vc[2], vb[3] / vc[3]);
+                return;
+            case TM_IDIV:
+                setvvalue(ra, float(luai_numidiv(vb[0], vc[0])), float(luai_numidiv(vb[1], vc[1])), float(luai_numidiv(vb[2], vc[2])),
+                    float(luai_numidiv(vb[3], vc[3])));
                 return;
             case TM_UNM:
                 setvvalue(ra, -vb[0], -vb[1], -vb[2], -vb[3]);
@@ -453,6 +465,10 @@ void luaV_doarith(lua_State* L, StkId ra, const TValue* rb, const TValue* rc, TM
                 case TM_DIV:
                     setvvalue(ra, vb[0] / nc, vb[1] / nc, vb[2] / nc, vb[3] / nc);
                     return;
+                case TM_IDIV:
+                    setvvalue(ra, float(luai_numidiv(vb[0], nc)), float(luai_numidiv(vb[1], nc)), float(luai_numidiv(vb[2], nc)),
+                        float(luai_numidiv(vb[3], nc)));
+                    return;
                 default:
                     break;
                 }
@@ -473,6 +489,10 @@ void luaV_doarith(lua_State* L, StkId ra, const TValue* rb, const TValue* rc, TM
                     return;
                 case TM_DIV:
                     setvvalue(ra, nb / vc[0], nb / vc[1], nb / vc[2], nb / vc[3]);
+                    return;
+                case TM_IDIV:
+                    setvvalue(ra, float(luai_numidiv(nb, vc[0])), float(luai_numidiv(nb, vc[1])), float(luai_numidiv(nb, vc[2])),
+                        float(luai_numidiv(nb, vc[3])));
                     return;
                 default:
                     break;

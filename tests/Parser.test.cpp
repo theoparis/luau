@@ -11,6 +11,13 @@
 
 using namespace Luau;
 
+LUAU_FASTFLAG(LuauCheckedFunctionSyntax);
+LUAU_FASTFLAG(LuauLexerLookaheadRemembersBraceType);
+LUAU_FASTINT(LuauRecursionLimit);
+LUAU_FASTINT(LuauTypeLengthLimit);
+LUAU_FASTINT(LuauParseErrorLimit);
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+
 namespace
 {
 
@@ -54,8 +61,7 @@ TEST_SUITE_BEGIN("AllocatorTests");
 TEST_CASE("allocator_can_be_moved")
 {
     Counter* c = nullptr;
-    auto inner = [&]()
-    {
+    auto inner = [&]() {
         Luau::Allocator allocator;
         c = allocator.alloc<Counter>();
         Luau::Allocator moved{std::move(allocator)};
@@ -901,7 +907,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_double_brace_begin")
     }
     catch (const ParseErrors& e)
     {
-        CHECK_EQ("Double braces are not permitted within interpolated strings. Did you mean '\\{'?", e.getErrors().front().getMessage());
+        CHECK_EQ("Double braces are not permitted within interpolated strings; did you mean '\\{'?", e.getErrors().front().getMessage());
     }
 }
 
@@ -916,14 +922,13 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_double_brace_mid")
     }
     catch (const ParseErrors& e)
     {
-        CHECK_EQ("Double braces are not permitted within interpolated strings. Did you mean '\\{'?", e.getErrors().front().getMessage());
+        CHECK_EQ("Double braces are not permitted within interpolated strings; did you mean '\\{'?", e.getErrors().front().getMessage());
     }
 }
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace")
 {
-    auto columnOfEndBraceError = [this](const char* code)
-    {
+    auto columnOfEndBraceError = [this](const char* code) {
         try
         {
             parse(code);
@@ -935,7 +940,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace")
             CHECK_EQ(e.getErrors().size(), 1);
 
             auto error = e.getErrors().front();
-            CHECK_EQ("Malformed interpolated string, did you forget to add a '}'?", error.getMessage());
+            CHECK_EQ("Malformed interpolated string; did you forget to add a '}'?", error.getMessage());
             return error.getLocation().begin.column;
         }
     };
@@ -958,7 +963,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace_in_table
     {
         CHECK_EQ(e.getErrors().size(), 2);
 
-        CHECK_EQ("Malformed interpolated string, did you forget to add a '}'?", e.getErrors().front().getMessage());
+        CHECK_EQ("Malformed interpolated string; did you forget to add a '}'?", e.getErrors().front().getMessage());
         CHECK_EQ("Expected '}' (to close '{' at line 2), got <eof>", e.getErrors().back().getMessage());
     }
 }
@@ -976,7 +981,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_mid_without_end_brace_in_t
     {
         CHECK_EQ(e.getErrors().size(), 2);
 
-        CHECK_EQ("Malformed interpolated string, did you forget to add a '}'?", e.getErrors().front().getMessage());
+        CHECK_EQ("Malformed interpolated string; did you forget to add a '}'?", e.getErrors().front().getMessage());
         CHECK_EQ("Expected '}' (to close '{' at line 2), got <eof>", e.getErrors().back().getMessage());
     }
 }
@@ -1040,6 +1045,36 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_expression")
     catch (const ParseErrors& e)
     {
         CHECK_EQ("Malformed interpolated string, expected expression inside '{}'", e.getErrors().front().getMessage());
+    }
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_malformed_escape")
+{
+    try
+    {
+        parse(R"(
+            local a = `???\xQQ {1}`
+        )");
+        FAIL("Expected ParseErrors to be thrown");
+    }
+    catch (const ParseErrors& e)
+    {
+        CHECK_EQ("Interpolated string literal contains malformed escape sequence", e.getErrors().front().getMessage());
+    }
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_weird_token")
+{
+    try
+    {
+        parse(R"(
+            local a = `??? {42 !!}`
+        )");
+        FAIL("Expected ParseErrors to be thrown");
+    }
+    catch (const ParseErrors& e)
+    {
+        CHECK_EQ("Malformed interpolated string, got '!'", e.getErrors().front().getMessage());
     }
 }
 
@@ -1127,6 +1162,10 @@ until false
 
 TEST_CASE_FIXTURE(Fixture, "parse_nesting_based_end_detection_local_function")
 {
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauDeferredConstraintResolution, false},
+    };
+
     try
     {
         parse(R"(-- i am line 1
@@ -1159,6 +1198,10 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "parse_nesting_based_end_detection_failsafe_earlier")
 {
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauDeferredConstraintResolution, false},
+    };
+
     try
     {
         parse(R"(-- i am line 1
@@ -1281,21 +1324,57 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_nested_type_group")
 {
-    ScopedFastInt sfis{"LuauRecursionLimit", 20};
+    ScopedFastInt sfis{FInt::LuauRecursionLimit, 10};
 
     matchParseError(
-        "function f(): (((((((((Fail))))))))) end", "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+        "function f(): ((((((((((Fail)))))))))) end", "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
 
     matchParseError("function f(): () -> () -> () -> () -> () -> () -> () -> () -> () -> () -> () end",
         "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
 
-    matchParseError(
-        "local t: {a: {b: {c: {d: {e: {f: {}}}}}}}", "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    matchParseError("local t: {a: {b: {c: {d: {e: {f: {g: {h: {i: {j: {}}}}}}}}}}}",
+        "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+
+    matchParseError("local f: ((((((((((Fail))))))))))", "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+
+    matchParseError("local t: a & (b & (c & (d & (e & (f & (g & (h & (i & (j & nil)))))))))",
+        "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+}
+
+TEST_CASE_FIXTURE(Fixture, "can_parse_complex_unions_successfully")
+{
+    ScopedFastInt sfis[] = {{FInt::LuauRecursionLimit, 10}, {FInt::LuauTypeLengthLimit, 10}};
+
+    parse(R"(
+local f:
+() -> ()
+|
+() -> ()
+|
+{a: number}
+|
+{b: number}
+|
+((number))
+|
+((number))
+|
+(a & (b & nil))
+|
+(a & (b & nil))
+)");
+
+    parse(R"(
+local f: a? | b? | c? | d? | e? | f? | g? | h?
+)");
+
+    matchParseError("local t: a & b & c & d & e & f & g & h & i & j & nil",
+        "Exceeded allowed type length; simplify your type annotation to make the code compile");
 }
 
 TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_nested_if_statements")
 {
-    ScopedFastInt sfis{"LuauRecursionLimit", 10};
+    ScopedFastInt sfis{FInt::LuauRecursionLimit, 10};
 
     matchParseErrorPrefix(
         "function f() if true then if true then if true then if true then if true then if true then if true then if true then if true "
@@ -1305,7 +1384,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_nested_if_statements")
 
 TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_changed_elseif_statements")
 {
-    ScopedFastInt sfis{"LuauRecursionLimit", 10};
+    ScopedFastInt sfis{FInt::LuauRecursionLimit, 10};
 
     matchParseErrorPrefix(
         "function f() if false then elseif false then elseif false then elseif false then elseif false then elseif false then elseif "
@@ -1315,7 +1394,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_changed_elseif_statements"
 
 TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_nested_ifelse_expressions1")
 {
-    ScopedFastInt sfis{"LuauRecursionLimit", 10};
+    ScopedFastInt sfis{FInt::LuauRecursionLimit, 10};
 
     matchParseError("function f() return if true then 1 elseif true then 2 elseif true then 3 elseif true then 4 elseif true then 5 elseif true then "
                     "6 elseif true then 7 elseif true then 8 elseif true then 9 elseif true then 10 else 11 end",
@@ -1324,7 +1403,7 @@ TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_nested_ifelse_expressions1
 
 TEST_CASE_FIXTURE(Fixture, "parse_error_with_too_many_nested_ifelse_expressions2")
 {
-    ScopedFastInt sfis{"LuauRecursionLimit", 10};
+    ScopedFastInt sfis{FInt::LuauRecursionLimit, 10};
 
     matchParseError(
         "function f() return if if if if if if if if if if true then false else true then false else true then false else true then false else true "
@@ -1563,9 +1642,9 @@ TEST_CASE_FIXTURE(Fixture, "string_literals_escapes_broken")
 
 TEST_CASE_FIXTURE(Fixture, "string_literals_broken")
 {
-    matchParseError("return \"", "Malformed string");
-    matchParseError("return \"\\", "Malformed string");
-    matchParseError("return \"\r\r", "Malformed string");
+    matchParseError("return \"", "Malformed string; did you forget to finish it?");
+    matchParseError("return \"\\", "Malformed string; did you forget to finish it?");
+    matchParseError("return \"\r\r", "Malformed string; did you forget to finish it?");
 }
 
 TEST_CASE_FIXTURE(Fixture, "number_literals")
@@ -1886,8 +1965,6 @@ TEST_CASE_FIXTURE(Fixture, "class_method_properties")
 
 TEST_CASE_FIXTURE(Fixture, "class_indexer")
 {
-    ScopedFastFlag LuauParseDeclareClassIndexer("LuauParseDeclareClassIndexer", true);
-
     AstStatBlock* stat = parseEx(R"(
         declare class Foo
             prop: boolean
@@ -2341,7 +2418,7 @@ local a : { [string] : number, [number] : string, count: number }
 
 TEST_CASE_FIXTURE(Fixture, "recovery_error_limit_1")
 {
-    ScopedFastInt luauParseErrorLimit("LuauParseErrorLimit", 1);
+    ScopedFastInt luauParseErrorLimit(FInt::LuauParseErrorLimit, 1);
 
     try
     {
@@ -2357,7 +2434,7 @@ TEST_CASE_FIXTURE(Fixture, "recovery_error_limit_1")
 
 TEST_CASE_FIXTURE(Fixture, "recovery_error_limit_2")
 {
-    ScopedFastInt luauParseErrorLimit("LuauParseErrorLimit", 2);
+    ScopedFastInt luauParseErrorLimit(FInt::LuauParseErrorLimit, 2);
 
     try
     {
@@ -2387,8 +2464,7 @@ public:
 
 TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
 {
-    auto checkAstEquivalence = [this](const char* codeWithErrors, const char* code)
-    {
+    auto checkAstEquivalence = [this](const char* codeWithErrors, const char* code) {
         try
         {
             parse(codeWithErrors);
@@ -2408,8 +2484,7 @@ TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
         CHECK_EQ(counterWithErrors.count, counter.count);
     };
 
-    auto checkRecovery = [this, checkAstEquivalence](const char* codeWithErrors, const char* code, unsigned expectedErrorCount)
-    {
+    auto checkRecovery = [this, checkAstEquivalence](const char* codeWithErrors, const char* code, unsigned expectedErrorCount) {
         try
         {
             parse(codeWithErrors);
@@ -2420,6 +2495,10 @@ TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
             CHECK_EQ(expectedErrorCount, e.getErrors().size());
             checkAstEquivalence(codeWithErrors, code);
         }
+    };
+
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauDeferredConstraintResolution, false},
     };
 
     checkRecovery("function foo(a, b. c) return a + b end", "function foo(a, b) return a + b end", 1);
@@ -2522,12 +2601,12 @@ TEST_CASE_FIXTURE(Fixture, "incomplete_method_call_still_yields_an_AstExprIndexN
 TEST_CASE_FIXTURE(Fixture, "recover_confusables")
 {
     // Binary
-    matchParseError("local a = 4 != 10", "Unexpected '!=', did you mean '~='?");
-    matchParseError("local a = true && false", "Unexpected '&&', did you mean 'and'?");
-    matchParseError("local a = false || true", "Unexpected '||', did you mean 'or'?");
+    matchParseError("local a = 4 != 10", "Unexpected '!='; did you mean '~='?");
+    matchParseError("local a = true && false", "Unexpected '&&'; did you mean 'and'?");
+    matchParseError("local a = false || true", "Unexpected '||'; did you mean 'or'?");
 
     // Unary
-    matchParseError("local a = !false", "Unexpected '!', did you mean 'not'?");
+    matchParseError("local a = !false", "Unexpected '!'; did you mean 'not'?");
 
     // Check that separate tokens are not considered as a single one
     matchParseError("local a = 4 ! = 10", "Expected identifier when parsing expression, got '!'");
@@ -2652,6 +2731,10 @@ TEST_CASE_FIXTURE(Fixture, "AstName_comparison")
 
 TEST_CASE_FIXTURE(Fixture, "generic_type_list_recovery")
 {
+    ScopedFastFlag sff[] = {
+        {FFlag::DebugLuauDeferredConstraintResolution, false},
+    };
+
     try
     {
         parse(R"(
@@ -2866,6 +2949,208 @@ TEST_CASE_FIXTURE(Fixture, "missing_default_type_pack_argument_after_variadic_ty
 
     CHECK_EQ(Location{{1, 23}, {1, 24}}, result.errors[1].getLocation());
     CHECK_EQ("Expected type pack after '=', got type", result.errors[1].getMessage());
+}
+
+TEST_CASE_FIXTURE(Fixture, "table_type_keys_cant_contain_nul")
+{
+    ParseResult result = tryParse(R"(
+        type Foo = { ["\0"]: number }
+    )");
+
+    REQUIRE_EQ(1, result.errors.size());
+
+    CHECK_EQ(Location{{1, 21}, {1, 22}}, result.errors[0].getLocation());
+    CHECK_EQ("String literal contains malformed escape sequence or \\0", result.errors[0].getMessage());
+}
+
+TEST_CASE_FIXTURE(Fixture, "invalid_escape_literals_get_reported_but_parsing_continues")
+{
+    ParseResult result = tryParse(R"(
+        local foo = "\xQQ"
+        print(foo)
+    )");
+
+    REQUIRE_EQ(1, result.errors.size());
+
+    CHECK_EQ(Location{{1, 20}, {1, 26}}, result.errors[0].getLocation());
+    CHECK_EQ("String literal contains malformed escape sequence", result.errors[0].getMessage());
+
+    REQUIRE(result.root);
+    CHECK_EQ(result.root->body.size, 2);
+}
+
+TEST_CASE_FIXTURE(Fixture, "unfinished_string_literals_get_reported_but_parsing_continues")
+{
+    ParseResult result = tryParse(R"(
+        local foo = "hi
+        print(foo)
+    )");
+
+    REQUIRE_EQ(1, result.errors.size());
+
+    CHECK_EQ(Location{{1, 20}, {1, 23}}, result.errors[0].getLocation());
+    CHECK_EQ("Malformed string; did you forget to finish it?", result.errors[0].getMessage());
+
+    REQUIRE(result.root);
+    CHECK_EQ(result.root->body.size, 2);
+}
+
+TEST_CASE_FIXTURE(Fixture, "unfinished_string_literal_types_get_reported_but_parsing_continues")
+{
+    ParseResult result = tryParse(R"(
+        type Foo = "hi
+        print(foo)
+    )");
+
+    REQUIRE_EQ(1, result.errors.size());
+
+    CHECK_EQ(Location{{1, 19}, {1, 22}}, result.errors[0].getLocation());
+    CHECK_EQ("Malformed string; did you forget to finish it?", result.errors[0].getMessage());
+
+    REQUIRE(result.root);
+    CHECK_EQ(result.root->body.size, 2);
+}
+
+TEST_CASE_FIXTURE(Fixture, "do_block_with_no_end")
+{
+    ParseResult result = tryParse(R"(
+        do
+    )");
+
+    REQUIRE_EQ(1, result.errors.size());
+
+    AstStatBlock* stat0 = result.root->body.data[0]->as<AstStatBlock>();
+    REQUIRE(stat0);
+
+    CHECK(!stat0->hasEnd);
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_with_lookahead_involved")
+{
+    ScopedFastFlag sff{FFlag::LuauLexerLookaheadRemembersBraceType, true};
+
+    ParseResult result = tryParse(R"(
+        local x = `{ {y} }`
+    )");
+
+    REQUIRE_MESSAGE(result.errors.empty(), result.errors[0].getMessage());
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_with_lookahead_involved2")
+{
+    ScopedFastFlag sff{FFlag::LuauLexerLookaheadRemembersBraceType, true};
+
+    ParseResult result = tryParse(R"(
+        local x = `{ { y{} } }`
+    )");
+
+    REQUIRE_MESSAGE(result.errors.empty(), result.errors[0].getMessage());
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_top_level_checked_fn")
+{
+    ParseOptions opts;
+    opts.allowDeclarationSyntax = true;
+    ScopedFastFlag sff{FFlag::LuauCheckedFunctionSyntax, true};
+
+    std::string src = R"BUILTIN_SRC(
+declare function @checked abs(n: number): number
+)BUILTIN_SRC";
+
+    ParseResult pr = tryParse(src, opts);
+    LUAU_ASSERT(pr.errors.size() == 0);
+
+    LUAU_ASSERT(pr.root->body.size == 1);
+    AstStat* root = *(pr.root->body.data);
+    auto func = root->as<AstStatDeclareFunction>();
+    LUAU_ASSERT(func);
+    LUAU_ASSERT(func->checkedFunction);
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_declared_table_checked_member")
+{
+    ParseOptions opts;
+    opts.allowDeclarationSyntax = true;
+    ScopedFastFlag sff{FFlag::LuauCheckedFunctionSyntax, true};
+
+    const std::string src = R"BUILTIN_SRC(
+    declare math : {
+        abs : @checked (number) -> number
+}
+)BUILTIN_SRC";
+
+    ParseResult pr = tryParse(src, opts);
+    LUAU_ASSERT(pr.errors.size() == 0);
+
+    LUAU_ASSERT(pr.root->body.size == 1);
+    AstStat* root = *(pr.root->body.data);
+    auto glob = root->as<AstStatDeclareGlobal>();
+    LUAU_ASSERT(glob);
+    auto tbl = glob->type->as<AstTypeTable>();
+    LUAU_ASSERT(tbl);
+    LUAU_ASSERT(tbl->props.size == 1);
+    auto prop = *tbl->props.data;
+    auto func = prop.type->as<AstTypeFunction>();
+    LUAU_ASSERT(func);
+    LUAU_ASSERT(func->checkedFunction);
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_checked_outside_decl_fails")
+{
+    ParseOptions opts;
+    opts.allowDeclarationSyntax = true;
+    ScopedFastFlag sff{FFlag::LuauCheckedFunctionSyntax, true};
+
+    ParseResult pr = tryParse(R"(
+    local @checked = 3
+)",
+        opts);
+    LUAU_ASSERT(pr.errors.size() > 0);
+    auto ts = pr.errors[1].getMessage();
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_checked_in_and_out_of_decl_fails")
+{
+    ParseOptions opts;
+    opts.allowDeclarationSyntax = true;
+    ScopedFastFlag sff{FFlag::LuauCheckedFunctionSyntax, true};
+
+    auto pr = tryParse(R"(
+    local @checked = 3
+    declare function @checked abs(n: number): number
+)",
+        opts);
+    LUAU_ASSERT(pr.errors.size() == 2);
+    LUAU_ASSERT(pr.errors[0].getLocation().begin.line == 1);
+    LUAU_ASSERT(pr.errors[1].getLocation().begin.line == 1);
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_checked_as_function_name_fails")
+{
+    ParseOptions opts;
+    opts.allowDeclarationSyntax = true;
+    ScopedFastFlag sff{FFlag::LuauCheckedFunctionSyntax, true};
+
+    auto pr = tryParse(R"(
+    function @checked(x: number) : number
+    end
+)",
+        opts);
+    LUAU_ASSERT(pr.errors.size() > 0);
+}
+
+TEST_CASE_FIXTURE(Fixture, "cannot_use_@_as_variable_name")
+{
+    ParseOptions opts;
+    opts.allowDeclarationSyntax = true;
+    ScopedFastFlag sff{FFlag::LuauCheckedFunctionSyntax, true};
+
+    auto pr = tryParse(R"(
+    local @blah = 3
+)",
+        opts);
+
+    LUAU_ASSERT(pr.errors.size() > 0);
 }
 
 TEST_SUITE_END();

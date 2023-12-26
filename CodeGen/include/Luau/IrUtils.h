@@ -94,12 +94,10 @@ inline bool isBlockTerminator(IrCmd cmd)
     case IrCmd::JUMP_IF_TRUTHY:
     case IrCmd::JUMP_IF_FALSY:
     case IrCmd::JUMP_EQ_TAG:
-    case IrCmd::JUMP_EQ_INT:
-    case IrCmd::JUMP_LT_INT:
-    case IrCmd::JUMP_GE_UINT:
+    case IrCmd::JUMP_CMP_INT:
     case IrCmd::JUMP_EQ_POINTER:
     case IrCmd::JUMP_CMP_NUM:
-    case IrCmd::JUMP_CMP_ANY:
+    case IrCmd::JUMP_FORN_LOOP_COND:
     case IrCmd::JUMP_SLOT_MATCH:
     case IrCmd::RETURN:
     case IrCmd::FORGLOOP:
@@ -122,12 +120,15 @@ inline bool isNonTerminatingJump(IrCmd cmd)
     case IrCmd::TRY_CALL_FASTGETTM:
     case IrCmd::CHECK_FASTCALL_RES:
     case IrCmd::CHECK_TAG:
+    case IrCmd::CHECK_TRUTHY:
     case IrCmd::CHECK_READONLY:
     case IrCmd::CHECK_NO_METATABLE:
     case IrCmd::CHECK_SAFE_ENV:
     case IrCmd::CHECK_ARRAY_SIZE:
     case IrCmd::CHECK_SLOT_MATCH:
     case IrCmd::CHECK_NODE_NO_NEXT:
+    case IrCmd::CHECK_NODE_VALUE:
+    case IrCmd::CHECK_BUFFER_LEN:
         return true;
     default:
         break;
@@ -145,17 +146,18 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::LOAD_DOUBLE:
     case IrCmd::LOAD_INT:
     case IrCmd::LOAD_TVALUE:
-    case IrCmd::LOAD_NODE_VALUE_TV:
     case IrCmd::LOAD_ENV:
     case IrCmd::GET_ARR_ADDR:
     case IrCmd::GET_SLOT_NODE_ADDR:
     case IrCmd::GET_HASH_NODE_ADDR:
+    case IrCmd::GET_CLOSURE_UPVAL_ADDR:
     case IrCmd::ADD_INT:
     case IrCmd::SUB_INT:
     case IrCmd::ADD_NUM:
     case IrCmd::SUB_NUM:
     case IrCmd::MUL_NUM:
     case IrCmd::DIV_NUM:
+    case IrCmd::IDIV_NUM:
     case IrCmd::MOD_NUM:
     case IrCmd::MIN_NUM:
     case IrCmd::MAX_NUM:
@@ -166,7 +168,10 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::SQRT_NUM:
     case IrCmd::ABS_NUM:
     case IrCmd::NOT_ANY:
+    case IrCmd::CMP_ANY:
     case IrCmd::TABLE_LEN:
+    case IrCmd::TABLE_SETNUM:
+    case IrCmd::STRING_LEN:
     case IrCmd::NEW_TABLE:
     case IrCmd::DUP_TABLE:
     case IrCmd::TRY_NUM_TO_INDEX:
@@ -189,6 +194,17 @@ inline bool hasResult(IrCmd cmd)
     case IrCmd::BITCOUNTLZ_UINT:
     case IrCmd::BITCOUNTRZ_UINT:
     case IrCmd::INVOKE_LIBM:
+    case IrCmd::GET_TYPE:
+    case IrCmd::GET_TYPEOF:
+    case IrCmd::NEWCLOSURE:
+    case IrCmd::FINDUPVAL:
+    case IrCmd::BUFFER_READI8:
+    case IrCmd::BUFFER_READU8:
+    case IrCmd::BUFFER_READI16:
+    case IrCmd::BUFFER_READU16:
+    case IrCmd::BUFFER_READI32:
+    case IrCmd::BUFFER_READF32:
+    case IrCmd::BUFFER_READF64:
         return true;
     default:
         break;
@@ -253,6 +269,18 @@ bool compare(double a, double b, IrCondition cond);
 void foldConstants(IrBuilder& build, IrFunction& function, IrBlock& block, uint32_t instIdx);
 
 uint32_t getNativeContextOffset(int bfid);
+
+// Cleans up blocks that were created with no users
+void killUnusedBlocks(IrFunction& function);
+
+// Get blocks in order that tries to maximize fallthrough between them during lowering
+// We want to mostly preserve build order with fallbacks outlined
+// But we also use hints from optimization passes that chain blocks together where there's only one out-in edge between them
+std::vector<uint32_t> getSortedBlockOrder(IrFunction& function);
+
+// Returns first non-dead block that comes after block at index 'i' in the sorted blocks array
+// 'dummy' block is returned if the end of array was reached
+IrBlock& getNextBlock(IrFunction& function, const std::vector<uint32_t>& sortedBlocks, IrBlock& dummy, size_t i);
 
 } // namespace CodeGen
 } // namespace Luau

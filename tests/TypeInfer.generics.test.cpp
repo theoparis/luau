@@ -9,8 +9,9 @@
 
 #include "doctest.h"
 
-LUAU_FASTFLAG(LuauInstantiateInSubtyping)
-LUAU_FASTFLAG(LuauTypeMismatchInvarianceInError)
+LUAU_FASTFLAG(LuauInstantiateInSubtyping);
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+LUAU_FASTFLAG(DebugLuauSharedSelf);
 
 using namespace Luau;
 
@@ -274,7 +275,7 @@ TEST_CASE_FIXTURE(Fixture, "infer_nested_generic_function")
 
 TEST_CASE_FIXTURE(Fixture, "infer_generic_methods")
 {
-    ScopedFastFlag sff{"DebugLuauSharedSelf", true};
+    ScopedFastFlag sff{FFlag::DebugLuauSharedSelf, true};
 
     CheckResult result = check(R"(
         local x = {}
@@ -303,8 +304,15 @@ TEST_CASE_FIXTURE(Fixture, "calling_self_generic_methods")
         end
     )");
 
-    // TODO: Should typecheck but currently errors CLI-54277
-    LUAU_REQUIRE_ERRORS(result);
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        LUAU_REQUIRE_NO_ERRORS(result);
+
+        CHECK_EQ("{ f: (t1) -> (), id: <a>(unknown, a) -> a } where t1 = { id: ((t1, number) -> number) & ((t1, string) -> string) }",
+            toString(requireType("x"), {true}));
+    }
+    else
+        LUAU_REQUIRE_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "infer_generic_property")
@@ -691,7 +699,7 @@ local d: D = c
 TEST_CASE_FIXTURE(BuiltinsFixture, "generic_functions_dont_cache_type_parameters")
 {
     CheckResult result = check(R"(
--- See https://github.com/Roblox/luau/issues/332
+-- See https://github.com/luau-lang/luau/issues/332
 -- This function has a type parameter with the same name as clones,
 -- so if we cache type parameter names for functions these get confused.
 -- function id<Z>(x : Z) : Z
@@ -725,23 +733,20 @@ y.a.c = y
     )");
 
     LUAU_REQUIRE_ERRORS(result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-    {
-        CHECK_EQ(toString(result.errors[0]),
-            R"(Type 'y' could not be converted into 'T<string>'
-caused by:
-  Property 'a' is not compatible. Type '{ c: T<string>?, d: number }' could not be converted into 'U<string>'
-caused by:
-  Property 'd' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    }
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK(toString(result.errors.at(0)) ==
+              R"(Type 'x' could not be converted into 'T<number>'; type x["a"]["c"] (nil) is not exactly T<number>["a"]["c"][0] (T<number>))");
     else
     {
-        CHECK_EQ(toString(result.errors[0]),
-            R"(Type 'y' could not be converted into 'T<string>'
+        const std::string expected = R"(Type 'y' could not be converted into 'T<string>'
 caused by:
-  Property 'a' is not compatible. Type '{ c: T<string>?, d: number }' could not be converted into 'U<string>'
+  Property 'a' is not compatible.
+Type '{ c: T<string>?, d: number }' could not be converted into 'U<string>'
 caused by:
-  Property 'd' is not compatible. Type 'number' could not be converted into 'string')");
+  Property 'd' is not compatible.
+Type 'number' could not be converted into 'string' in an invariant context)";
+        CHECK_EQ(expected, toString(result.errors[0]));
     }
 }
 
@@ -947,7 +952,7 @@ TEST_CASE_FIXTURE(Fixture, "instantiate_cyclic_generic_function")
     std::optional<Property> methodProp = get(argTable->props, "method");
     REQUIRE(bool(methodProp));
 
-    const FunctionType* methodFunction = get<FunctionType>(methodProp->type());
+    const FunctionType* methodFunction = get<FunctionType>(follow(methodProp->type()));
     REQUIRE(methodFunction != nullptr);
 
     std::optional<TypeId> methodArg = first(methodFunction->argTypes);
@@ -1149,7 +1154,7 @@ TEST_CASE_FIXTURE(Fixture, "substitution_with_bound_table")
 
 TEST_CASE_FIXTURE(Fixture, "apply_type_function_nested_generics1")
 {
-    // https://github.com/Roblox/luau/issues/484
+    // https://github.com/luau-lang/luau/issues/484
     CheckResult result = check(R"(
 --!strict
 type MyObject = {
@@ -1177,7 +1182,7 @@ local complex: ComplexObject<string> = {
 
 TEST_CASE_FIXTURE(Fixture, "apply_type_function_nested_generics2")
 {
-    // https://github.com/Roblox/luau/issues/484
+    // https://github.com/luau-lang/luau/issues/484
     CheckResult result = check(R"(
 --!strict
 type MyObject = {
@@ -1188,15 +1193,29 @@ type ComplexObject<T> = {
 	nested: MyObject
 }
 
-local complex2: ComplexObject<string> = nil
+function f(complex: ComplexObject<string>)
+    local x = complex.nested.getReturnValue(function(): string
+        return ""
+    end)
 
-local x = complex2.nested.getReturnValue(function(): string
-	return ""
-end)
+    local y = complex.nested.getReturnValue(function()
+        return 3
+    end)
+end
+    )");
 
-local y = complex2.nested.getReturnValue(function()
-	return 3
-end)
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "apply_type_function_nested_generics3")
+{
+    // This minimization was useful for debugging a particular issue with
+    // cyclic types under local type inference.
+
+    CheckResult result = check(R"(
+        local getReturnValue: <V>(cb: () -> V) -> V = nil :: any
+
+        local y = getReturnValue(function() return nil :: any end)
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
@@ -1249,7 +1268,7 @@ end
 TEST_CASE_FIXTURE(BuiltinsFixture, "higher_rank_polymorphism_should_not_accept_instantiated_arguments")
 {
     ScopedFastFlag sffs[] = {
-        {"LuauInstantiateInSubtyping", true},
+        {FFlag::LuauInstantiateInSubtyping, true},
     };
 
     CheckResult result = check(R"(

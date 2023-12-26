@@ -8,6 +8,7 @@
 
 using namespace Luau;
 
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
 
 TEST_SUITE_BEGIN("IntersectionTypes");
 
@@ -163,7 +164,7 @@ TEST_CASE_FIXTURE(Fixture, "index_on_an_intersection_type_with_property_guarante
 
     LUAU_REQUIRE_NO_ERRORS(result);
     if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK("{| y: number |}" == toString(requireType("r")));
+        CHECK("{ y: number }" == toString(requireType("r")));
     else
         CHECK("{| y: number |} & {| y: number |}" == toString(requireType("r")));
 }
@@ -332,9 +333,13 @@ TEST_CASE_FIXTURE(Fixture, "table_intersection_write_sealed_indirect")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(4, result);
-    CHECK_EQ(toString(result.errors[0]), R"(Type '(string, number) -> string' could not be converted into '(string) -> string'
+    const std::string expected = R"(Type
+    '(string, number) -> string'
+could not be converted into
+    '(string) -> string'
 caused by:
-  Argument count mismatch. Function expects 2 arguments, but only 1 is specified)");
+  Argument count mismatch. Function expects 2 arguments, but only 1 is specified)";
+    CHECK_EQ(expected, toString(result.errors[0]));
     CHECK_EQ(toString(result.errors[1]), "Cannot add property 'z' to table 'X & Y'");
     CHECK_EQ(toString(result.errors[2]), "Type 'number' could not be converted into 'string'");
     CHECK_EQ(toString(result.errors[3]), "Cannot add property 'w' to table 'X & Y'");
@@ -356,9 +361,14 @@ TEST_CASE_FIXTURE(Fixture, "table_write_sealed_indirect")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(4, result);
-    CHECK_EQ(toString(result.errors[0]), R"(Type '(string, number) -> string' could not be converted into '(string) -> string'
+    const std::string expected = R"(Type
+    '(string, number) -> string'
+could not be converted into
+    '(string) -> string'
 caused by:
-  Argument count mismatch. Function expects 2 arguments, but only 1 is specified)");
+  Argument count mismatch. Function expects 2 arguments, but only 1 is specified)";
+    CHECK_EQ(expected, toString(result.errors[0]));
+
     CHECK_EQ(toString(result.errors[1]), "Cannot add property 'z' to table 'XY'");
     CHECK_EQ(toString(result.errors[2]), "Type 'number' could not be converted into 'string'");
     CHECK_EQ(toString(result.errors[3]), "Cannot add property 'w' to table 'XY'");
@@ -385,9 +395,11 @@ local a: XYZ = 3
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), R"(Type 'number' could not be converted into 'X & Y & Z'
+    const std::string expected = R"(Type 'number' could not be converted into 'X & Y & Z'
 caused by:
-  Not all intersection parts are compatible. Type 'number' could not be converted into 'X')");
+  Not all intersection parts are compatible.
+Type 'number' could not be converted into 'X')";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_intersection_all")
@@ -468,12 +480,16 @@ TEST_CASE_FIXTURE(Fixture, "intersect_saturate_overloaded_functions")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((number?) -> number?) & ((string?) -> string?)' could not be converted into '(number) -> number'; "
-                                         "none of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((number?) -> number?) & ((string?) -> string?)'
+could not be converted into
+    '(number) -> number'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "union_saturate_overloaded_functions")
 {
+
     CheckResult result = check(R"(
         local x : ((number) -> number) & ((string) -> string)
         local y : ((number | string) -> (number | string)) = x -- OK
@@ -481,8 +497,11 @@ TEST_CASE_FIXTURE(Fixture, "union_saturate_overloaded_functions")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((number) -> number) & ((string) -> string)' could not be converted into '(boolean | number) -> "
-                                         "boolean | number'; none of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((number) -> number) & ((string) -> string)'
+could not be converted into
+    '(boolean | number) -> boolean | number'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "intersection_of_tables")
@@ -494,14 +513,23 @@ TEST_CASE_FIXTURE(Fixture, "intersection_of_tables")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '{| p: number?, q: number?, r: number? |} & {| p: number?, q: string? |}' could not be converted into "
-                                         "'{| p: nil |}'; none of the intersection parts are compatible");
+    const std::string expected =
+        (FFlag::DebugLuauDeferredConstraintResolution) ?
+        "Type "
+        "'{ p: number?, q: number?, r: number? } & { p: number?, q: string? }'"
+        " could not be converted into "
+        "'{ p: nil }'; none of the intersection parts are compatible" :
+        R"(Type
+    '{| p: number?, q: number?, r: number? |} & {| p: number?, q: string? |}'
+could not be converted into
+    '{| p: nil |}'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "intersection_of_tables_with_top_properties")
 {
     CheckResult result = check(R"(
-        local x : { p : number?, q : any } & { p : unknown, q : string? }
+        local x : { p : number?, q : any } & { p : unknown, q : string? } = { p = 123, q = "foo" }
         local y : { p : number?, q : string? } = x -- OK
         local z : { p : string?, q : number? } = x -- Not OK
     )");
@@ -531,18 +559,16 @@ TEST_CASE_FIXTURE(Fixture, "intersection_of_tables_with_top_properties")
     else
     {
         LUAU_REQUIRE_ERROR_COUNT(1, result);
-        CHECK_EQ(toString(result.errors[0]),
-            "Type '{| p: number?, q: any |} & {| p: unknown, q: string? |}' could not be converted into '{| p: string?, "
-            "q: number? |}'; none of the intersection parts are compatible");
+        const std::string expected = R"(Type
+    '{| p: number?, q: any |} & {| p: unknown, q: string? |}'
+could not be converted into
+    '{| p: string?, q: number? |}'; none of the intersection parts are compatible)";
+        CHECK_EQ(expected, toString(result.errors[0]));
     }
 }
 
 TEST_CASE_FIXTURE(Fixture, "intersection_of_tables_with_never_properties")
 {
-    ScopedFastFlag sffs[]{
-        {"LuauUninhabitedSubAnything2", true},
-    };
-
     CheckResult result = check(R"(
         local x : { p : number?, q : never } & { p : never, q : string? } -- OK
         local y : { p : never, q : never } = x -- OK
@@ -561,9 +587,17 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_functions_returning_intersections")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]),
-        "Type '((number?) -> {| p: number |} & {| q: number |}) & ((string?) -> {| p: number |} & {| r: number |})' could not be converted into "
-        "'(number?) -> {| p: number, q: number, r: number |}'; none of the intersection parts are compatible");
+    const std::string expected =
+        (FFlag::DebugLuauDeferredConstraintResolution) ?
+        R"(Type
+    '((number?) -> { p: number } & { q: number }) & ((string?) -> { p: number } & { r: number })'
+could not be converted into
+    '(number?) -> { p: number, q: number, r: number }'; none of the intersection parts are compatible)" :
+        R"(Type
+    '((number?) -> {| p: number |} & {| q: number |}) & ((string?) -> {| p: number |} & {| r: number |})'
+could not be converted into
+    '(number?) -> {| p: number, q: number, r: number |}'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloaded_functions_mentioning_generic")
@@ -577,8 +611,11 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_functions_mentioning_generic")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((number?) -> a | number) & ((string?) -> a | string)' could not be converted into '(number?) -> a'; "
-                                         "none of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((number?) -> a | number) & ((string?) -> a | string)'
+could not be converted into
+    '(number?) -> a'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloaded_functions_mentioning_generics")
@@ -592,8 +629,11 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_functions_mentioning_generics")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]),
-        "Type '((a?) -> a | b) & ((c?) -> b | c)' could not be converted into '(a?) -> (a & c) | b'; none of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((a?) -> a | b) & ((c?) -> b | c)'
+could not be converted into
+    '(a?) -> (a & c) | b'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloaded_functions_mentioning_generic_packs")
@@ -607,8 +647,11 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_functions_mentioning_generic_packs")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((number?, a...) -> (number?, b...)) & ((string?, a...) -> (string?, b...))' could not be converted "
-                                         "into '(nil, b...) -> (nil, a...)'; none of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((number?, a...) -> (number?, b...)) & ((string?, a...) -> (string?, b...))'
+could not be converted into
+    '(nil, b...) -> (nil, a...)'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_unknown_result")
@@ -622,8 +665,11 @@ TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_unknown_result")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((nil) -> unknown) & ((number) -> number)' could not be converted into '(number?) -> number?'; none "
-                                         "of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((nil) -> unknown) & ((number) -> number)'
+could not be converted into
+    '(number?) -> number?'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_unknown_arguments")
@@ -637,8 +683,11 @@ TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_unknown_arguments")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((number) -> number?) & ((unknown) -> string?)' could not be converted into '(number?) -> nil'; none "
-                                         "of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((number) -> number?) & ((unknown) -> string?)'
+could not be converted into
+    '(number?) -> nil'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_never_result")
@@ -652,8 +701,11 @@ TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_never_result")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((nil) -> never) & ((number) -> number)' could not be converted into '(number?) -> never'; none of "
-                                         "the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((nil) -> never) & ((number) -> number)'
+could not be converted into
+    '(number?) -> never'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_never_arguments")
@@ -667,8 +719,11 @@ TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_never_arguments")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((never) -> string?) & ((number) -> number?)' could not be converted into '(number?) -> nil'; none "
-                                         "of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((never) -> string?) & ((number) -> number?)'
+could not be converted into
+    '(number?) -> nil'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_overlapping_results_and_variadics")
@@ -680,8 +735,11 @@ TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_overlapping_results_and_
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((number?) -> (...number)) & ((string?) -> number | string)' could not be converted into '(number | "
-                                         "string) -> (number, number?)'; none of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((number?) -> (...number)) & ((string?) -> number | string)'
+could not be converted into
+    '(number | string) -> (number, number?)'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_weird_typepacks_1")
@@ -725,8 +783,11 @@ TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_weird_typepacks_3")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]),
-        "Type '(() -> (a...)) & (() -> (number?, a...))' could not be converted into '() -> number'; none of the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '(() -> (a...)) & (() -> (number?, a...))'
+could not be converted into
+    '() -> number'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_weird_typepacks_4")
@@ -740,8 +801,11 @@ TEST_CASE_FIXTURE(Fixture, "overloadeded_functions_with_weird_typepacks_4")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ(toString(result.errors[0]), "Type '((a...) -> ()) & ((number, a...) -> number)' could not be converted into '(number?) -> ()'; none of "
-                                         "the intersection parts are compatible");
+    const std::string expected = R"(Type
+    '((a...) -> ()) & ((number, a...) -> number)'
+could not be converted into
+    '(number?) -> ()'; none of the intersection parts are compatible)";
+    CHECK_EQ(expected, toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "intersect_metatables")
@@ -881,7 +945,85 @@ TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_intersection_types_2")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ("({| x: number |} & {| x: string |}) -> never", toString(requireType("f")));
+    CHECK_EQ("({ x: number } & { x: string }) -> never", toString(requireType("f")));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "index_property_table_intersection_1")
+{
+    CheckResult result = check(R"(
+type Foo = {
+	Bar: string,
+} & { Baz: number }
+
+local x: Foo = { Bar = "1", Baz = 2 }
+local y = x.Bar
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "index_property_table_intersection_2")
+{
+    CheckResult result = check(R"(
+        type Foo = {
+            Bar: string,
+        } & { Baz: number }
+
+        local x: Foo = { Bar = "1", Baz = 2 }
+        local y = x["Bar"]
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "cli_80596_simplify_degenerate_intersections")
+{
+    ScopedFastFlag dcr{FFlag::DebugLuauDeferredConstraintResolution, true};
+
+    CheckResult result = check(R"(
+        type A = {
+            x: number?,
+        }
+
+        type B = {
+            x: number?,
+        }
+
+        type C = A & B
+        local obj: C = {
+            x = 3,
+        }
+
+        local x: number = obj.x or 3
+    )");
+
+    LUAU_REQUIRE_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "cli_80596_simplify_more_realistic_intersections")
+{
+    ScopedFastFlag dcr{FFlag::DebugLuauDeferredConstraintResolution, true};
+
+    CheckResult result = check(R"(
+        type A = {
+            x: number?,
+            y: string?,
+        }
+
+        type B = {
+            x: number?,
+            z: string?,
+        }
+
+        type C = A & B
+        local obj: C = {
+            x = 3,
+        }
+
+        local x: number = obj.x or 3
+    )");
+
+    LUAU_REQUIRE_ERRORS(result);
 }
 
 TEST_SUITE_END();

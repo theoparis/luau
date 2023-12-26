@@ -15,7 +15,7 @@
 
 #define VERBOSE 0 // 1 - print out commandline invocations.  2 - print out stdout
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__MINGW32__)
 
 const auto popen = &_popen;
 const auto pclose = &_pclose;
@@ -429,8 +429,7 @@ struct Reducer
         }
     }
 
-    void run(const std::string scriptName, const std::string command, std::string_view source,
-        std::string_view searchText)
+    void run(const std::string scriptName, const std::string command, std::string_view source, std::string_view searchText)
     {
         this->scriptName = scriptName;
 

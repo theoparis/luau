@@ -11,8 +11,8 @@
 #include "doctest.h"
 
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
-LUAU_FASTFLAG(LuauTypeMismatchInvarianceInError)
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
+LUAU_FASTFLAG(LuauTinyControlFlowAnalysis);
 
 using namespace Luau;
 
@@ -226,7 +226,10 @@ local tbl: string = require(game.A)
 
     CheckResult result = frontend.check("game/B");
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    CHECK_EQ("Type '{| def: number |}' could not be converted into 'string'", toString(result.errors[0]));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("Type '{ def: number }' could not be converted into 'string'", toString(result.errors[0]));
+    else
+        CHECK_EQ("Type '{| def: number |}' could not be converted into 'string'", toString(result.errors[0]));
 }
 
 TEST_CASE_FIXTURE(Fixture, "bound_free_table_export_is_ok")
@@ -410,14 +413,16 @@ local b: B.T = a
     CheckResult result = frontend.check("game/C");
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/A' could not be converted into 'T' from 'game/B'
-caused by:
-  Property 'x' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK(toString(result.errors.at(0)) == "Type 'a' could not be converted into 'T'; at [\"x\"], number is not exactly string");
     else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/A' could not be converted into 'T' from 'game/B'
+    {
+        const std::string expected = R"(Type 'T' from 'game/A' could not be converted into 'T' from 'game/B'
 caused by:
-  Property 'x' is not compatible. Type 'number' could not be converted into 'string')");
+  Property 'x' is not compatible.
+Type 'number' could not be converted into 'string' in an invariant context)";
+        CHECK_EQ(expected, toString(result.errors[0]));
+    }
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "module_type_conflict_instantiated")
@@ -449,14 +454,16 @@ local b: B.T = a
     CheckResult result = frontend.check("game/D");
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/B' could not be converted into 'T' from 'game/C'
-caused by:
-  Property 'x' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK(toString(result.errors.at(0)) == "Type 'a' could not be converted into 'T'; at [\"x\"], number is not exactly string");
     else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/B' could not be converted into 'T' from 'game/C'
+    {
+        const std::string expected = R"(Type 'T' from 'game/B' could not be converted into 'T' from 'game/C'
 caused by:
-  Property 'x' is not compatible. Type 'number' could not be converted into 'string')");
+  Property 'x' is not compatible.
+Type 'number' could not be converted into 'string' in an invariant context)";
+        CHECK_EQ(expected, toString(result.errors[0]));
+    }
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "constrained_anyification_clone_immutable_types")
@@ -485,7 +492,7 @@ return unpack(l0[_])
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "check_imported_module_names")
 {
-    ScopedFastFlag sff{"LuauTinyControlFlowAnalysis", true};
+    ScopedFastFlag sff{FFlag::LuauTinyControlFlowAnalysis, true};
 
     fileResolver.source["game/A"] = R"(
 return function(...) end

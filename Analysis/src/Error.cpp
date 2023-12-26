@@ -4,13 +4,15 @@
 #include "Luau/Clone.h"
 #include "Luau/Common.h"
 #include "Luau/FileResolver.h"
+#include "Luau/NotNull.h"
 #include "Luau/StringUtils.h"
 #include "Luau/ToString.h"
 
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
-LUAU_FASTFLAGVARIABLE(LuauTypeMismatchInvarianceInError, false)
+LUAU_FASTINTVARIABLE(LuauIndentTypeMismatchMaxTypeLength, 10)
 
 static std::string wrongNumberOfArgsString(
     size_t expectedCount, std::optional<size_t> maximumCount, size_t actualCount, const char* argPrefix = nullptr, bool isVariadic = false)
@@ -67,6 +69,20 @@ struct ErrorConverter
 
         std::string result;
 
+        auto quote = [&](std::string s) {
+            return "'" + s + "'";
+        };
+
+        auto constructErrorMessage = [&](std::string givenType, std::string wantedType, std::optional<std::string> givenModule,
+                                         std::optional<std::string> wantedModule) -> std::string {
+            std::string given = givenModule ? quote(givenType) + " from " + quote(*givenModule) : quote(givenType);
+            std::string wanted = wantedModule ? quote(wantedType) + " from " + quote(*wantedModule) : quote(wantedType);
+            size_t luauIndentTypeMismatchMaxTypeLength = size_t(FInt::LuauIndentTypeMismatchMaxTypeLength);
+            if (givenType.length() <= luauIndentTypeMismatchMaxTypeLength || wantedType.length() <= luauIndentTypeMismatchMaxTypeLength)
+                return "Type " + given + " could not be converted into " + wanted;
+            return "Type\n    " + given + "\ncould not be converted into\n    " + wanted;
+        };
+
         if (givenTypeName == wantedTypeName)
         {
             if (auto givenDefinitionModule = getDefinitionModuleName(tm.givenType))
@@ -77,20 +93,18 @@ struct ErrorConverter
                     {
                         std::string givenModuleName = fileResolver->getHumanReadableModuleName(*givenDefinitionModule);
                         std::string wantedModuleName = fileResolver->getHumanReadableModuleName(*wantedDefinitionModule);
-                        result = "Type '" + givenTypeName + "' from '" + givenModuleName + "' could not be converted into '" + wantedTypeName +
-                                 "' from '" + wantedModuleName + "'";
+                        result = constructErrorMessage(givenTypeName, wantedTypeName, givenModuleName, wantedModuleName);
                     }
                     else
                     {
-                        result = "Type '" + givenTypeName + "' from '" + *givenDefinitionModule + "' could not be converted into '" + wantedTypeName +
-                                 "' from '" + *wantedDefinitionModule + "'";
+                        result = constructErrorMessage(givenTypeName, wantedTypeName, *givenDefinitionModule, *wantedDefinitionModule);
                     }
                 }
             }
         }
 
         if (result.empty())
-            result = "Type '" + givenTypeName + "' could not be converted into '" + wantedTypeName + "'";
+            result = constructErrorMessage(givenTypeName, wantedTypeName, std::nullopt, std::nullopt);
 
 
         if (tm.error)
@@ -98,7 +112,7 @@ struct ErrorConverter
             result += "\ncaused by:\n  ";
 
             if (!tm.reason.empty())
-                result += tm.reason + " ";
+                result += tm.reason + "\n";
 
             result += Luau::toString(*tm.error, TypeErrorToStringOptions{fileResolver});
         }
@@ -106,7 +120,7 @@ struct ErrorConverter
         {
             result += "; " + tm.reason;
         }
-        else if (FFlag::LuauTypeMismatchInvarianceInError && tm.context == TypeMismatch::InvariantContext)
+        else if (tm.context == TypeMismatch::InvariantContext)
         {
             result += " in an invariant context";
         }
@@ -476,7 +490,12 @@ struct ErrorConverter
 
     std::string operator()(const TypePackMismatch& e) const
     {
-        return "Type pack '" + toString(e.givenTp) + "' could not be converted into '" + toString(e.wantedTp) + "'";
+        std::string ss = "Type pack '" + toString(e.givenTp) + "' could not be converted into '" + toString(e.wantedTp) + "'";
+
+        if (!e.reason.empty())
+            ss += "; " + e.reason;
+
+        return ss;
     }
 
     std::string operator()(const DynamicPropertyLookupOnClassesUnsafe& e) const
@@ -496,12 +515,29 @@ struct ErrorConverter
 
     std::string operator()(const WhereClauseNeeded& e) const
     {
-        return "Type family instance " + Luau::toString(e.ty) + " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time";
+        return "Type family instance " + Luau::toString(e.ty) +
+               " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this "
+               "time";
     }
 
     std::string operator()(const PackWhereClauseNeeded& e) const
     {
-        return "Type pack family instance " + Luau::toString(e.tp) + " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time";
+        return "Type pack family instance " + Luau::toString(e.tp) +
+               " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this "
+               "time";
+    }
+
+    std::string operator()(const CheckedFunctionCallError& e) const
+    {
+        // TODO: What happens if checkedFunctionName cannot be found??
+        return "Function '" + e.checkedFunctionName + "' expects '" + toString(e.expected) + "' at argument #" + std::to_string(e.argumentIndex) +
+               ", but got '" + Luau::toString(e.passed) + "'";
+    }
+
+    std::string operator()(const NonStrictFunctionDefinitionError& e) const
+    {
+        return "Argument " + e.argument + " with type '" + toString(e.argumentType) + "' in function '" + e.functionName +
+               "' is used in a way that will run time error";
     }
 };
 
@@ -825,6 +861,17 @@ bool PackWhereClauseNeeded::operator==(const PackWhereClauseNeeded& rhs) const
     return tp == rhs.tp;
 }
 
+bool CheckedFunctionCallError::operator==(const CheckedFunctionCallError& rhs) const
+{
+    return *expected == *rhs.expected && *passed == *rhs.passed && checkedFunctionName == rhs.checkedFunctionName &&
+           argumentIndex == rhs.argumentIndex;
+}
+
+bool NonStrictFunctionDefinitionError::operator==(const NonStrictFunctionDefinitionError& rhs) const
+{
+    return functionName == rhs.functionName && argument == rhs.argument && argumentType == rhs.argumentType;
+}
+
 std::string toString(const TypeError& error)
 {
     return toString(error, TypeErrorToStringOptions{});
@@ -842,7 +889,7 @@ bool containsParseErrorName(const TypeError& error)
 }
 
 template<typename T>
-void copyError(T& e, TypeArena& destArena, CloneState cloneState)
+void copyError(T& e, TypeArena& destArena, CloneState& cloneState)
 {
     auto clone = [&](auto&& ty) {
         return ::Luau::clone(ty, destArena, cloneState);
@@ -991,13 +1038,22 @@ void copyError(T& e, TypeArena& destArena, CloneState cloneState)
         e.ty = clone(e.ty);
     else if constexpr (std::is_same_v<T, PackWhereClauseNeeded>)
         e.tp = clone(e.tp);
+    else if constexpr (std::is_same_v<T, CheckedFunctionCallError>)
+    {
+        e.expected = clone(e.expected);
+        e.passed = clone(e.passed);
+    }
+    else if constexpr (std::is_same_v<T, NonStrictFunctionDefinitionError>)
+    {
+        e.argumentType = clone(e.argumentType);
+    }
     else
         static_assert(always_false_v<T>, "Non-exhaustive type switch");
 }
 
-void copyErrors(ErrorVec& errors, TypeArena& destArena)
+void copyErrors(ErrorVec& errors, TypeArena& destArena, NotNull<BuiltinTypes> builtinTypes)
 {
-    CloneState cloneState;
+    CloneState cloneState{builtinTypes};
 
     auto visitErrorData = [&](auto&& e) {
         copyError(e, destArena, cloneState);

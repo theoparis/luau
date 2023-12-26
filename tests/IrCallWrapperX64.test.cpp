@@ -10,9 +10,9 @@ using namespace Luau::CodeGen::X64;
 class IrCallWrapperX64Fixture
 {
 public:
-    IrCallWrapperX64Fixture()
-        : build(/* logText */ true, ABIX64::Windows)
-        , regs(build, function)
+    IrCallWrapperX64Fixture(ABIX64 abi = ABIX64::Windows)
+        : build(/* logText */ true, abi)
+        , regs(build, function, nullptr)
         , callWrap(regs, build, ~0u)
     {
     }
@@ -40,6 +40,15 @@ public:
     static constexpr RegisterX64 rArg3d = r8d;
     static constexpr RegisterX64 rArg4 = r9;
     static constexpr RegisterX64 rArg4d = r9d;
+};
+
+class IrCallWrapperX64FixtureSystemV : public IrCallWrapperX64Fixture
+{
+public:
+    IrCallWrapperX64FixtureSystemV()
+        : IrCallWrapperX64Fixture(ABIX64::SystemV)
+    {
+    }
 };
 
 TEST_SUITE_BEGIN("IrCallWrapperX64");
@@ -474,9 +483,9 @@ TEST_CASE_FIXTURE(IrCallWrapperX64Fixture, "ExtraCoverage")
     checkMatch(R"(
  vmovups     xmm2,xmmword ptr [r13]
  mov         rax,rcx
- lea         rcx,none ptr [r12+8]
+ lea         rcx,[r12+8]
  mov         rbx,rdx
- lea         rdx,none ptr [r12+010h]
+ lea         rdx,[r12+010h]
  call        qword ptr [rax+rbx]
 )");
 }
@@ -491,7 +500,7 @@ TEST_CASE_FIXTURE(IrCallWrapperX64Fixture, "AddressInStackArguments")
     callWrap.call(qword[r14]);
 
     checkMatch(R"(
- lea         rax,none ptr [r12+010h]
+ lea         rax,[r12+010h]
  mov         qword ptr [rsp+020h],rax
  mov         ecx,1
  mov         edx,2
@@ -516,6 +525,37 @@ TEST_CASE_FIXTURE(IrCallWrapperX64Fixture, "ImmediateConflictWithFunction")
  mov         rbx,rdx
  mov         edx,2
  call        qword ptr [rax+rbx]
+)");
+}
+
+TEST_CASE_FIXTURE(IrCallWrapperX64FixtureSystemV, "SuggestedConflictWithReserved")
+{
+    ScopedRegX64 tmp{regs, regs.takeReg(r9, kInvalidInstIdx)};
+
+    IrCallWrapperX64 callWrap(regs, build);
+    callWrap.addArgument(SizeX64::qword, r12);
+    callWrap.addArgument(SizeX64::qword, r13);
+    callWrap.addArgument(SizeX64::qword, r14);
+    callWrap.addArgument(SizeX64::dword, 2);
+    callWrap.addArgument(SizeX64::qword, 1);
+
+    RegisterX64 reg = callWrap.suggestNextArgumentRegister(SizeX64::dword);
+    build.mov(reg, 10);
+    callWrap.addArgument(SizeX64::dword, reg);
+
+    callWrap.call(tmp.release());
+
+    checkMatch(R"(
+ mov         eax,Ah
+ mov         rdi,r12
+ mov         rsi,r13
+ mov         rdx,r14
+ mov         rcx,r9
+ mov         r9d,eax
+ mov         rax,rcx
+ mov         ecx,2
+ mov         r8,1
+ call        rax
 )");
 }
 

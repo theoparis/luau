@@ -78,10 +78,14 @@ TEST_CASE_FIXTURE(DocumentationSymbolFixture, "class_method")
         declare class Foo
             function bar(self, x: string): number
         end
+
+        declare Foo: {
+            new: () -> Foo
+        }
     )");
 
     std::optional<DocumentationSymbol> symbol = getDocSymbol(R"(
-        local x: Foo
+        local x: Foo = Foo.new()
         x:bar("asdf")
     )",
         Position(2, 11));
@@ -96,10 +100,14 @@ TEST_CASE_FIXTURE(DocumentationSymbolFixture, "overloaded_class_method")
             function bar(self, x: string): number
             function bar(self, x: number): string
         end
+
+        declare Foo: {
+            new: () -> Foo
+        }
     )");
 
     std::optional<DocumentationSymbol> symbol = getDocSymbol(R"(
-        local x: Foo
+        local x: Foo = Foo.new()
         x:bar("asdf")
     )",
         Position(2, 11));
@@ -293,6 +301,34 @@ TEST_CASE_FIXTURE(Fixture, "include_types_ancestry")
     CHECK(ancestryTypes.size() > ancestryNoTypes.size());
     CHECK(!ancestryNoTypes.back()->asType());
     CHECK(ancestryTypes.back()->asType());
+}
+
+TEST_CASE_FIXTURE(Fixture, "find_name_ancestry")
+{
+    check(R"(
+        local tbl = {}
+        function tbl:abc() end
+    )");
+    const Position pos(2, 18);
+
+    std::vector<AstNode*> ancestry = findAstAncestryOfPosition(*getMainSourceModule(), pos);
+
+    REQUIRE(!ancestry.empty());
+    CHECK(ancestry.back()->is<AstExprLocal>());
+}
+
+TEST_CASE_FIXTURE(Fixture, "find_expr_ancestry")
+{
+    check(R"(
+        local tbl = {}
+        function tbl:abc() end
+    )");
+    const Position pos(2, 29);
+
+    std::vector<AstNode*> ancestry = findAstAncestryOfPosition(*getMainSourceModule(), pos);
+
+    REQUIRE(!ancestry.empty());
+    CHECK(ancestry.back()->is<AstExprFunction>());
 }
 
 TEST_SUITE_END();

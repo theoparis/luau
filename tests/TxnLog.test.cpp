@@ -12,6 +12,8 @@
 
 using namespace Luau;
 
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
+
 struct TxnLogFixture
 {
     TxnLog log{/*useScopes*/ true};
@@ -22,9 +24,9 @@ struct TxnLogFixture
     ScopePtr globalScope = std::make_shared<Scope>(builtinTypes.anyTypePack);
     ScopePtr childScope = std::make_shared<Scope>(globalScope);
 
-    TypeId a = arena.freshType(globalScope.get());
-    TypeId b = arena.freshType(globalScope.get());
-    TypeId c = arena.freshType(childScope.get());
+    TypeId a = freshType(NotNull{&arena}, NotNull{&builtinTypes}, globalScope.get());
+    TypeId b = freshType(NotNull{&arena}, NotNull{&builtinTypes}, globalScope.get());
+    TypeId c = freshType(NotNull{&arena}, NotNull{&builtinTypes}, childScope.get());
 
     TypeId g = arena.addType(GenericType{"G"});
 };
@@ -33,7 +35,7 @@ TEST_SUITE_BEGIN("TxnLog");
 
 TEST_CASE_FIXTURE(TxnLogFixture, "colliding_union_incoming_type_has_greater_scope")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
 
     log.replace(c, BoundType{a});
     log2.replace(a, BoundType{c});
@@ -66,7 +68,7 @@ TEST_CASE_FIXTURE(TxnLogFixture, "colliding_union_incoming_type_has_greater_scop
 
 TEST_CASE_FIXTURE(TxnLogFixture, "colliding_union_incoming_type_has_lesser_scope")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
 
     log.replace(a, BoundType{c});
     log2.replace(c, BoundType{a});
@@ -99,7 +101,7 @@ TEST_CASE_FIXTURE(TxnLogFixture, "colliding_union_incoming_type_has_lesser_scope
 
 TEST_CASE_FIXTURE(TxnLogFixture, "colliding_coincident_logs_do_not_create_degenerate_unions")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    ScopedFastFlag sff{FFlag::DebugLuauDeferredConstraintResolution, true};
 
     log.replace(a, BoundType{b});
     log2.replace(a, BoundType{b});
@@ -108,8 +110,8 @@ TEST_CASE_FIXTURE(TxnLogFixture, "colliding_coincident_logs_do_not_create_degene
 
     log.commit();
 
-    CHECK("a" == toString(a));
-    CHECK("a" == toString(b));
+    CHECK("'a" == toString(a));
+    CHECK("'a" == toString(b));
 }
 
 TEST_CASE_FIXTURE(TxnLogFixture, "replacing_persistent_types_is_allowed_but_makes_the_log_radioactive")

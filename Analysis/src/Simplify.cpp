@@ -2,13 +2,17 @@
 
 #include "Luau/Simplify.h"
 
+#include "Luau/DenseHash.h"
+#include "Luau/Normalize.h" // TypeIds
 #include "Luau/RecursionCounter.h"
 #include "Luau/ToString.h"
 #include "Luau/TypeArena.h"
-#include "Luau/Normalize.h" // TypeIds
+#include "Luau/TypeUtils.h"
+
 #include <algorithm>
 
 LUAU_FASTINT(LuauTypeReductionRecursionLimit)
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 
 namespace Luau
 {
@@ -18,7 +22,7 @@ struct TypeSimplifier
     NotNull<BuiltinTypes> builtinTypes;
     NotNull<TypeArena> arena;
 
-    std::set<TypeId> blockedTypes;
+    DenseHashSet<TypeId> blockedTypes{nullptr};
 
     int recursionDepth = 0;
 
@@ -45,14 +49,6 @@ struct TypeSimplifier
     TypeId simplify(TypeId ty);
     TypeId simplify(TypeId ty, DenseHashSet<TypeId>& seen);
 };
-
-template<typename A, typename B, typename TID>
-static std::pair<const A*, const B*> get2(TID one, TID two)
-{
-    const A* a = get<A>(one);
-    const B* b = get<B>(two);
-    return a && b ? std::make_pair(a, b) : std::make_pair(nullptr, nullptr);
-}
 
 // Match the exact type false|nil
 static bool isFalsyType(TypeId ty)
@@ -364,7 +360,13 @@ Relation relate(TypeId left, TypeId right)
     if (auto ut = get<UnionType>(left))
         return Relation::Intersects;
     else if (auto ut = get<UnionType>(right))
+    {
+        std::vector<Relation> opts;
+        for (TypeId part : ut)
+            if (relate(left, part) == Relation::Subset)
+                return Relation::Subset;
         return Relation::Intersects;
+    }
 
     if (auto rnt = get<NegationType>(right))
     {
@@ -1103,6 +1105,19 @@ TypeId TypeSimplifier::intersect(TypeId left, TypeId right)
     if (get<NeverType>(right))
         return right;
 
+    if (auto lf = get<FreeType>(left))
+    {
+        Relation r = relate(lf->upperBound, right);
+        if (r == Relation::Subset || r == Relation::Coincident)
+            return left;
+    }
+    else if (auto rf = get<FreeType>(right))
+    {
+        Relation r = relate(left, rf->upperBound);
+        if (r == Relation::Superset || r == Relation::Coincident)
+            return right;
+    }
+
     if (isTypeVariable(left))
     {
         blockedTypes.insert(left);
@@ -1153,6 +1168,11 @@ TypeId TypeSimplifier::union_(TypeId left, TypeId right)
 
     left = simplify(left);
     right = simplify(right);
+
+    if (get<NeverType>(left))
+        return right;
+    if (get<NeverType>(right))
+        return left;
 
     if (auto leftUnion = get<UnionType>(left))
     {
@@ -1257,6 +1277,8 @@ TypeId TypeSimplifier::simplify(TypeId ty, DenseHashSet<TypeId>& seen)
 
 SimplifyResult simplifyIntersection(NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena, TypeId left, TypeId right)
 {
+    LUAU_ASSERT(FFlag::DebugLuauDeferredConstraintResolution);
+
     TypeSimplifier s{builtinTypes, arena};
 
     // fprintf(stderr, "Intersect %s and %s ...\n", toString(left).c_str(), toString(right).c_str());
@@ -1270,11 +1292,13 @@ SimplifyResult simplifyIntersection(NotNull<BuiltinTypes> builtinTypes, NotNull<
 
 SimplifyResult simplifyUnion(NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena, TypeId left, TypeId right)
 {
+    LUAU_ASSERT(FFlag::DebugLuauDeferredConstraintResolution);
+
     TypeSimplifier s{builtinTypes, arena};
 
     TypeId res = s.union_(left, right);
 
-    // fprintf(stderr, "Union %s and %s -> %s\n", toString(a).c_str(), toString(b).c_str(), toString(res).c_str());
+    // fprintf(stderr, "Union %s and %s -> %s\n", toString(left).c_str(), toString(right).c_str(), toString(res).c_str());
 
     return SimplifyResult{res, std::move(s.blockedTypes)};
 }

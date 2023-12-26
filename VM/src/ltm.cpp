@@ -28,6 +28,7 @@ const char* const luaT_typenames[] = {
     "function",
     "userdata",
     "thread",
+    "buffer",
 };
 
 const char* const luaT_eventname[] = {
@@ -48,6 +49,7 @@ const char* const luaT_eventname[] = {
     "__sub",
     "__mul",
     "__div",
+    "__idiv",
     "__mod",
     "__pow",
     "__unm",
@@ -126,6 +128,18 @@ const TString* luaT_objtypenamestr(lua_State* L, const TValue* o)
 
         if (ttisstring(type))
             return tsvalue(type);
+    }
+    else if (FFlag::LuauTaggedLuData && ttislightuserdata(o))
+    {
+        int tag = lightuserdatatag(o);
+
+        if (unsigned(tag) < LUA_LUTAG_LIMIT)
+        {
+            const TString* name = L->global->lightuserdataname[tag];
+
+            if (name)
+                return name;
+        }
     }
     else if (Table* mt = L->global->mt[ttype(o)])
     {

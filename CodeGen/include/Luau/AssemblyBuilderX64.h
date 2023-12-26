@@ -85,6 +85,7 @@ public:
     void test(OperandX64 lhs, OperandX64 rhs);
     void lea(OperandX64 lhs, OperandX64 rhs);
     void setcc(ConditionX64 cond, OperandX64 op);
+    void cmov(ConditionX64 cond, RegisterX64 lhs, OperandX64 rhs);
 
     void push(OperandX64 op);
     void pop(OperandX64 op);
@@ -105,6 +106,7 @@ public:
 
     void bsr(RegisterX64 dst, OperandX64 src);
     void bsf(RegisterX64 dst, OperandX64 src);
+    void bswap(RegisterX64 dst);
 
     // Code alignment
     void nop(uint32_t length = 1);
@@ -131,6 +133,7 @@ public:
     void vcvttsd2si(OperandX64 dst, OperandX64 src);
     void vcvtsi2sd(OperandX64 dst, OperandX64 src1, OperandX64 src2);
     void vcvtsd2ss(OperandX64 dst, OperandX64 src1, OperandX64 src2);
+    void vcvtss2sd(OperandX64 dst, OperandX64 src1, OperandX64 src2);
 
     void vroundsd(OperandX64 dst, OperandX64 src1, OperandX64 src2, RoundingModeX64 roundingMode); // inexact
 
@@ -155,7 +158,6 @@ public:
     void vcmpltsd(OperandX64 dst, OperandX64 src1, OperandX64 src2);
 
     void vblendvpd(RegisterX64 dst, RegisterX64 src1, OperandX64 mask, RegisterX64 src3);
-
 
     // Run final checks
     bool finalize();
@@ -226,6 +228,7 @@ private:
     void placeVex(OperandX64 dst, OperandX64 src1, OperandX64 src2, bool setW, uint8_t mode, uint8_t prefix);
     void placeImm8Or32(int32_t imm);
     void placeImm8(int32_t imm);
+    void placeImm16(int16_t imm);
     void placeImm32(int32_t imm);
     void placeImm64(int64_t imm);
     void placeLabel(Label& label);

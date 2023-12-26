@@ -10,6 +10,7 @@
 
 LUAU_FASTINT(LuauVisitRecursionLimit)
 LUAU_FASTFLAG(LuauBoundLazyTypes2)
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 
 namespace Luau
@@ -93,6 +94,10 @@ struct GenericTypeVisitor
         return visit(ty);
     }
     virtual bool visit(TypeId ty, const FreeType& ftv)
+    {
+        return visit(ty);
+    }
+    virtual bool visit(TypeId ty, const LocalType& ftv)
     {
         return visit(ty);
     }
@@ -220,7 +225,31 @@ struct GenericTypeVisitor
                 traverse(btv->boundTo);
         }
         else if (auto ftv = get<FreeType>(ty))
-            visit(ty, *ftv);
+        {
+            if (FFlag::DebugLuauDeferredConstraintResolution)
+            {
+                if (visit(ty, *ftv))
+                {
+                    // TODO: Replace these if statements with assert()s when we
+                    // delete FFlag::DebugLuauDeferredConstraintResolution.
+                    //
+                    // When the old solver is used, these pointers are always
+                    // unused. When the new solver is used, they are never null.
+                    if (ftv->lowerBound)
+                        traverse(ftv->lowerBound);
+
+                    if (ftv->upperBound)
+                        traverse(ftv->upperBound);
+                }
+            }
+            else
+                visit(ty, *ftv);
+        }
+        else if (auto lt = get<LocalType>(ty))
+        {
+            if (visit(ty, *lt))
+                traverse(lt->domain);
+        }
         else if (auto gtv = get<GenericType>(ty))
             visit(ty, *gtv);
         else if (auto etv = get<ErrorType>(ty))
@@ -304,13 +333,10 @@ struct GenericTypeVisitor
                 if (ctv->metatable)
                     traverse(*ctv->metatable);
 
-                if (FFlag::LuauTypecheckClassTypeIndexers)
+                if (ctv->indexer)
                 {
-                    if (ctv->indexer)
-                    {
-                        traverse(ctv->indexer->indexType);
-                        traverse(ctv->indexer->indexResultType);
-                    }
+                    traverse(ctv->indexer->indexType);
+                    traverse(ctv->indexer->indexResultType);
                 }
             }
         }
