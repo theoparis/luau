@@ -21,7 +21,7 @@ if(LUAU_STATIC_CRT)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-project(Luau LANGUAGES CXX C VERSION 0.607)
+project(Luau LANGUAGES CXX C)
 add_library(Luau.Common INTERFACE)
 add_library(Luau.Ast STATIC)
 add_library(Luau.Compiler STATIC)
@@ -304,18 +304,13 @@ configure_package_config_file(
     "${CMAKE_CURRENT_BINARY_DIR}/LuauConfig.cmake"
     INSTALL_DESTINATION "lib/cmake/Luau"
 )
-write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/LuauConfigVersion.cmake"
-    VERSION "${PROJECT_VERSION}"
-    COMPATIBILITY AnyNewerVersion
-)
 export(
-    TARGETS Luau.Ast Luau.Analysis Luau.CodeGen Luau.VM Luau.Compiler Luau.Config Luau.Common Luau.VM.Internals
+    TARGETS Luau.Ast Luau.Analysis Luau.CodeGen Luau.VM Luau.Compiler Luau.Config Luau.Common
     FILE "${CMAKE_CURRENT_BINARY_DIR}/LuauExport.cmake"
 )
 
 install(
-    TARGETS Luau.Ast Luau.Analysis Luau.CodeGen Luau.VM Luau.Compiler Luau.Config Luau.Common Luau.VM.Internals
+    TARGETS Luau.Ast Luau.Analysis Luau.CodeGen Luau.VM Luau.Compiler Luau.Config Luau.Common
     EXPORT LuauTargets
     LIBRARY DESTINATION "lib"
     ARCHIVE DESTINATION "lib"
@@ -342,7 +337,6 @@ install(
         "${CMAKE_CURRENT_SOURCE_DIR}/Analysis/include/"
         "${CMAKE_CURRENT_SOURCE_DIR}/CodeGen/include/"
         "${CMAKE_CURRENT_SOURCE_DIR}/VM/include/"
-        "${CMAKE_CURRENT_SOURCE_DIR}/VM/src/"
         "${CMAKE_CURRENT_SOURCE_DIR}/Common/include/"
         "${CMAKE_CURRENT_SOURCE_DIR}/Config/include/"
     DESTINATION "include"
